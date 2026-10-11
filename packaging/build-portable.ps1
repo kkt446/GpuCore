@@ -87,13 +87,56 @@ Copy-Item $RuntimeDir $pyDst -Recurse -Force
 Ok ("python\ 已复制（{0:N1} MB）" -f ((Get-ChildItem $pyDst -Recurse -File | Measure-Object Length -Sum).Sum / 1MB))
 
 # ---------------------------------------------------------------------------
+
+# $pruned 必须在 Step 3.5 之前定义：那一段就开始往 _pruned 里搬东西了，
+# 定义晚了在 -KeepPruned 下会因为 $pruned 是 null 直接报错。
+
+# $pruned 必须在 Step 3.5 之前定义：那一段就开始往 _pruned 里搬东西了，
+# 定义晚了在 -KeepPruned 下会因为 $pruned 是 null 直接报错（Join-Path 收到 null）.
+$pruned = Join-Path $dist '_pruned'
+if ($KeepPruned) { New-Item -ItemType Directory -Path $pruned -Force | Out-Null }
+
+Step 3.5 "删掉运行时自带的安装器和文档"
+# 借来的运行时不一定是"解压好的干净目录"：
+#   * python.org 的安装包目录旁边常常躺着 python-3.12.10-amd64.exe（约 27 MB），
+#     CI 上 actions/setup-python 给的就是这种 → 整个复制进来会白胖 27 MB。
+#   * 官方发行包还带 Doc（HTML 文档，体积可观）和 NEWS.txt / LICENSE.txt。
+# 这些都是给人看的，程序一个字节都用不到，而且**从没用过它们的人不会想到要删**。
+# 实测：合成一份和 CI 同构的运行时（192.3 MB，含 26.7 MB 安装器）用旧脚本打出来
+# 是 67.2 MB 的包且安装器还在里面；下面这段会把它们全部拿走。
+$pyJunk = @{
+    # 按名字挑：安装器、文档、发行说明
+    'File'  = @('python-*-amd64.exe', 'python-*-arm64.exe', 'NEWS.txt', 'LICENSE.txt')
+    'Dir'   = @('Doc')
+}
+$junkRemoved = 0
+$junkBytes = 0
+foreach ($f in $pyJunk.File) {
+    @(Get-ChildItem -Path $pyDst -Filter $f -File -ErrorAction SilentlyContinue) | ForEach-Object {
+        $junkBytes += $_.Length
+        $junkRemoved++
+        if ($KeepPruned) { Move-Item $_.FullName (Join-Path $pruned $_.Name) -Force }
+        else            { Remove-Item $_.FullName -Force }
+    }
+}
+foreach ($d in $pyJunk.Dir) {
+    $junkDir = Join-Path $pyDst $d
+    if (Test-Path $junkDir) {
+        $junkBytes += (Get-ChildItem $junkDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+        $junkRemoved++
+        if ($KeepPruned) { Move-Item $junkDir (Join-Path $pruned $d) -Force }
+        else            { Remove-Item $junkDir -Recurse -Force }
+    }
+}
+if ($junkRemoved -gt 0) { Ok ("删掉运行时自带的安装器/文档 {0} 项，省 {1:N1} MB" -f $junkRemoved, ($junkBytes / 1MB)) }
+else { Ok "运行时里没有自带的安装器/文档（干净）" }
+
+# ---------------------------------------------------------------------------
 Step 4 "裁剪用不到的模块"
 # 只保留本程序真的会 import 的东西。裁多了会导致启动即崩，所以：
 #   * DLLs 里的 .pyd/.dll 全部保留（体积小、依赖关系复杂，不值得冒险）
 #   * tcl 只留运行时脚本，删掉 demos/msgs/encodings 等
 #   * Lib 按下面的白名单删，白名单之外一律移除
-$pruned = Join-Path $dist '_pruned'
-if ($KeepPruned) { New-Item -ItemType Directory -Path $pruned -Force | Out-Null }
 
 # 保留（以及它们的依赖会被隐式保留，因为整目录保留）
 $libKeep = @(
