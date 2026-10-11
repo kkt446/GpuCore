@@ -252,6 +252,34 @@ if ($code -ne 0) {
 Ok "自检通过（退出码 0）"
 
 # ---------------------------------------------------------------------------
+# Step 8.2 "验证 GpuCore.exe 真的能把自检输出交出来"
+#
+# 上面那一步是直接调包内 python.exe 的，因此**绕过了启动器**。而用户排障时敲的是
+# `GpuCore.exe --check`，走的是 launcher.cs 那条路：它必须认出这是个"要看输出"
+# 的参数，用带控制台的 python.exe 并且不建新窗口（CreateNoWindow=false），
+# 否则 stdout 是无效句柄，报告一个字都留不下。
+#
+# 这不是假设的故障 —— `--report` 当初就是这么静默失败的：退出码 0，输出 0 字节。
+# 单测 `packaging/launcher-console-flags` 只能静态核对白名单，真正跑一遍还是得靠这里。
+$exeCheck = Join-Path $env:TEMP 'gpucore-exe-check.txt'
+$ErrorActionPreference = 'Continue'
+& $exePath --check *> $exeCheck
+$exeCode = $LASTEXITCODE
+$ErrorActionPreference = $savedEap
+# 注意：这里**不**断言退出码。跑这个包的机器可能本来就没有华硕通道，
+# 退出码非 0 是正常结果；我们要证的是"输出有没有传出来"，这才是用户看不见的故障。
+$exeBytes = if (Test-Path $exeCheck) { (Get-Item $exeCheck).Length } else { 0 }
+if ($exeBytes -lt 200) {
+    Write-Host "`nGpuCore.exe --check 只留下了 $exeBytes 字节输出（预期几百字节以上）。" -ForegroundColor Red
+    Write-Host "说明启动器没把 stdout 交给子进程 —— 用户敲这个命令会看到一片空白。" -ForegroundColor Red
+    Write-Host "检查 launcher.cs 的 consoleMode 白名单里有没有 --check / --report。" -ForegroundColor Red
+    Die "启动器输出通路断了"
+}
+$exeHead = Get-Content $exeCheck -Encoding UTF8 -TotalCount 3
+$exeHead | ForEach-Object { Ok $_ }
+Ok ("GpuCore.exe --check 输出 {0:N0} 字节（退出码 {1}，非 0 属预期）" -f $exeBytes, $exeCode)
+
+# ---------------------------------------------------------------------------
 Step 8.5 "界面冒烟测试（真建一个窗口）"
 # --check 只验证采集通路，不建窗口。窗口建不起来 / 建出来是空的这类故障
 # （DPI、字体、Canvas、图标）只有在真建一次窗口时才会现形，而那正是用户

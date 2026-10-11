@@ -47,16 +47,15 @@ class Report:
         return [i for i in self.items if i.level == WARN]
 
 
-# 设备号表（华硕 ACPI）。值是给自检时逐个读的。
-DEVICES = {
-    "GPUEcoROG (独显供电)": 0x00090020,
-    "GPUMuxROG (显示通路)": 0x00090016,
-    "GPUEcoVivo": 0x00090120,
-    "GPUMuxVivo": 0x00090026,
-    "Temp_CPU": 0x00120094,
-    "Temp_GPU": 0x00120097,
-    "PerformanceMode": 0x00120075,
-}
+# 设备号表**只此一份**，在 gpucore/hardware.py：
+#   * 独显供电 / 显示通路 —— ECO_CANDIDATES、MUX_CANDIDATES（按产品线候选，逐个探测）
+#   * 温度 / 功耗 / 电池 / 外接 —— SENSOR_DEVICES
+# 这里以前还抄过一份 DEVICES 表，但它从头到尾没有任何地方引用过，
+# 作用只有一个：让人以为改了它就能加设备号（其实改了不会生效），
+# 而且会和 hardware.py 里的真表越来越不一致。已删除，别再抄回来。
+#
+# 「设备号全扫」那一段（print_machine_report 里）覆盖的是全 0x0009/0x0012 段，
+# 比任何手抄表都全，也不需要维护。
 
 
 def _check_environment(rep: Report) -> None:
@@ -254,24 +253,104 @@ def print_report(rep: Report) -> int:
 # 而是「这台机器的 ATKACPI 上到底有哪些设备号是真的」。
 # ---------------------------------------------------------------------------
 
-def _wmi(query: str, field: str) -> str:
-    """取一个 WMI 字段，多个实例时用 ` | ` 接成一行。
+# 报告里要取的每一项。全部塞进**一次** PowerShell 调用里取（原因见 _wmi_probe 的注释）。
+#   单值型：(键, "CLASSEXPR", "字段")  —— CLASSEXPR 会被原样拼进 Get-CimInstance
+#   实例型：(键, "CLASSEXPR", ("字段1", "字段2", ...))  —— 每个实例出一行 `[键] a | b`
+_REPORT_WMI_FIELDS = [
+    ("厂商", "Win32_ComputerSystem", "Manufacturer"),
+    ("型号", "Win32_ComputerSystem", "Model"),
+    ("系统型号", "Win32_ComputerSystemProduct", "Name"),
+    ("BIOS", "Win32_BIOS", "SMBIOSBIOSVersion"),
+    ("主板", "Win32_BaseBoard", "Product"),
+    ("操作系统", "Win32_OperatingSystem", "Caption"),
+    ("系统版本", "Win32_OperatingSystem", "Version"),
+    ("显卡", "Win32_VideoController",
+     ("Name", "DriverVersion", "PNPDeviceID")),
+]
 
-    Win32_VideoController 这类查询会返回多条记录，PowerShell 会一行一条地打出来，
-    直接嵌进报告里会把 markdown 的列表结构撑破 —— 所以这里统一压平。
+# 显示类设备的 PnP 状态。
+#
+# 这一项是用来分开「独显断电省电」和「独显驱动坏了」的：断电时设备根本不出现在
+# 设备列表里，驱动坏了才会出现并带一个状态码（Code 43 = CM_PROB_FAILED_POST_START）。
+# 只看 nvidia-smi 分不出这两者 —— 两种情况下它都读不到。
+#
+# 用 Win32_PnPEntity（CIM 查询）而不是 Get-PnpDevice（cmdlet）：实测本机上
+# `Get-PnpDevice -Class Display` 要 5.7 秒，`Get-CimInstance Win32_PnPEntity
+# -Filter "PNPClass='Display'"` 约 1 秒，拿到的 Status/ConfigManagerErrorCode
+# 是同一份数据（Error + 43 也读得到）。
+_REPORT_PNP_CLASS = "Display"
+
+
+def _wmi_probe() -> dict:
+    """一次 PowerShell 调用拿回报告要用的所有机器信息。
+
+    返回 `{"字段": 压平后的字符串, "显示设备": [每行一个设备]}`。
+    读不到就是空串/空列表 —— 调用方负责在报告里写"读不到"。
+
+    为什么非要合成一次调用：每次起 PowerShell 在本机要 0.5 秒起、每个 CIM 查询还要
+    再花时间，逐字段各调一次会拖到二十几秒，用户会以为程序卡死了。现在整份报告
+    信息大约 8 秒（其中大部分是 CIM 冷启动），所以超时给了 40 秒。
     """
+    import subprocess
+
+    lines = ['Write-Output "=== GpuCore 报告 ==="']
+    for key, classexpr, what in _REPORT_WMI_FIELDS:
+        if isinstance(what, tuple):
+            props = ", ".join(f'$_.{p}' for p in what)
+            lines.append(f'Get-CimInstance {classexpr} -ErrorAction SilentlyContinue | '
+                         f'ForEach-Object {{ Write-Output ("[{key}] " + '
+                         f'(@({props}) -join " | ")) }}')
+        else:
+            lines.append(f'Write-Output ("[{key}] " + (((Get-CimInstance {classexpr} '
+                         f'-ErrorAction SilentlyContinue).{what}) -join " | "))')
+    lines.append('Write-Output "=== 显示设备 ==="')
+    lines.append(f'Get-CimInstance Win32_PnPEntity -Filter "PNPClass=\'{_REPORT_PNP_CLASS}\'" '
+                 '-ErrorAction SilentlyContinue | ForEach-Object { Write-Output '
+                 '("{0} | {1} | {2}" -f $_.Status, $_.ConfigManagerErrorCode, $_.Name) }')
+    script = "; ".join(lines)
+
+    res: dict = {}
+    pnp: List[str] = []
     try:
-        import subprocess
         cp = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             f"(Get-CimInstance {query}).{field}"],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=25,
+            timeout=40,
         )
-        lines = [x.strip() for x in (cp.stdout or "").splitlines() if x.strip()]
-        return " | ".join(lines)
+        out = [x.rstrip() for x in (cp.stdout or "").splitlines()]
     except Exception:
-        return ""
+        res["显示设备"] = pnp
+        return res
+
+    in_pnp = False
+    for raw in out:
+        line = raw.strip()
+        if not line or line == "=== GpuCore 报告 ===":
+            continue
+        if line == "=== 显示设备 ===":
+            in_pnp = True
+            continue
+        if in_pnp:
+            pnp.append(line)
+            continue
+        if line.startswith("[") and "] " in line:
+            label, value = line[1:].split("] ", 1)
+            value = value.strip()
+            if not value:
+                continue
+            # 值**按原样**存成一条，不做任何分隔符拆合：虚拟机显示适配器的
+            # PNPDeviceID 本身就含 `&`、驱动版本里本来就有多个号，
+            # 拿一个字符去"压平再拆开"必然把它们切碎（第一版就是这么错的）。
+            # 同一个标签出现多次（多块显卡）就多条。
+            res.setdefault(label, []).append(value)
+    res["显示设备"] = pnp
+    return res
+
+
+def _one(wmi: dict, key: str, default: str = "读不到") -> str:
+    """取一个单值字段；重复出现时用 ` | ` 接起来（只用在确实是一个值的地方）。"""
+    vals = wmi.get(key) or []
+    return " | ".join(vals) if vals else default
 
 
 def _scan_acpi(acpi, base: int, span: int = 0x20) -> List[Tuple[int, int]]:
@@ -294,59 +373,86 @@ def _scan_acpi(acpi, base: int, span: int = 0x20) -> List[Tuple[int, int]]:
     return hits
 
 
-def build_machine_report() -> str:
-    """产出一份可以直接贴到 issue 里的纯文本报告。"""
+def build_machine_report(acpi_factory=None) -> str:
+    """产出一份可以直接贴到 issue 里的纯文本报告。
+
+    `acpi_factory` 只为测试留的口子：默认真的去开 `\\\\.\\ATKACPI`。
+    但"打不开通道"那条分支（非华硕机器）在开发机上是跑不到的，
+    而它恰恰是最容易出问题的一段 —— 所以让用例能塞一个假的进来。
+    """
     from .app import AtkAcpi
     from .hardware import ECO_CANDIDATES, MUX_CANDIDATES, SENSOR_DEVICES, probe_devices
+
+    make_acpi = acpi_factory or AtkAcpi
 
     L: List[str] = []
     L.append(f"# {branding.APP_NAME} 机型报告 v{branding.APP_VERSION}")
     L.append("")
 
+    # 一次 PowerShell 调用取回全部机器信息（每个字段各起一个进程要二十几秒）
+    wmi = _wmi_probe()
     L.append("## 机器")
     L.append("")
-    L.append(f"- 厂商型号   : {_wmi('Win32_ComputerSystem', 'Manufacturer')} / "
-             f"{_wmi('Win32_ComputerSystem', 'Model')}")
-    L.append(f"- 系统型号   : {_wmi('Win32_ComputerSystemProduct', 'Name')}")
-    L.append(f"- BIOS       : {_wmi('Win32_BIOS', 'SMBIOSBIOSVersion')}")
-    L.append(f"- 主板       : {_wmi('Win32_BaseBoard', 'Product')}")
-    L.append(f"- 操作系统   : {_wmi('Win32_OperatingSystem', 'Caption')} "
-             f"{_wmi('Win32_OperatingSystem', 'Version')}")
+    L.append(f"- 厂商型号   : {_one(wmi, '厂商')} / {_one(wmi, '型号')}")
+    L.append(f"- 系统型号   : {_one(wmi, '系统型号')}")
+    L.append(f"- BIOS       : {_one(wmi, 'BIOS')}")
+    L.append(f"- 主板       : {_one(wmi, '主板')}")
+    L.append(f"- 操作系统   : {_one(wmi, '操作系统')} {_one(wmi, '系统版本')}")
     L.append("")
 
     L.append("## 显卡")
     L.append("")
     # 用 WMI 而不是 DXGI 枚举：这份报告是在**别人的机器**上跑的，
     # WMI 不依赖我们那套手写的 ctypes COM 虚表，出错概率低得多。
-    vcs = _wmi("Win32_VideoController", "Name")
+    # 显卡可能有几块（核显/独显/虚拟显示器），一块一行，型号和它自己的
+    # 驱动版本、设备 ID 对起来看 —— 所以每个实例出一行、字段用 ` | ` 分隔。
+    vcs = wmi.get("显卡") or []
     if vcs:
-        for name in [x.strip() for x in vcs.split(" | ") if x.strip()]:
-            L.append(f"- {name}")
+        for line in vcs:
+            L.append(f"- {line}")
     else:
         L.append("- WMI 没报出显卡")
-    L.append(f"- 驱动版本: {_wmi('Win32_VideoController', 'DriverVersion') or '读不到'}")
-    L.append(f"- 设备 ID : {_wmi('Win32_VideoController', 'PNPDeviceID') or '读不到'}")
+    # 各显示设备在 Windows 这边的状态 + 问题码。这一行是用来分开
+    # 「独显断电省电」和「独显驱动坏了」的：断电时设备根本不出现，
+    # 驱动坏了才会出现并带一个 Error + 问题码（Code 43 就是 CM_PROB_FAILED_POST_START）。
+    # 光看 nvidia-smi 是分不出这两者的 —— 两种情况下它都读不到。
+    pnp = wmi.get("显示设备") or []
+    if pnp:
+        L.append("- 显示类设备状态（Status | Problem | 名称）:")
+        for line in pnp:
+            L.append(f"    - {line}")
+    else:
+        L.append("- 显示类设备状态: 读不到（Get-PnpDevice 没有输出）")
     try:
         from .app import nvidia_available
-        L.append(f"- nvidia-smi 可读: **{nvidia_available()}**"
-                 "（False = 独显正断电，属正常省电状态）")
+        ok = nvidia_available()
+        L.append(f"- nvidia-smi 可读: **{ok}**")
+        if not ok:
+            # 这里不许替用户下结论：False 既可能是"独显正断电省电"（正常），
+            # 也可能是"驱动没起来 / 设备故障"。真正的区别就在上面那行设备状态里。
+            L.append("  （读不到独显时先看上面那行设备状态：设备不在列表里 = 只是断电省电，属正常；")
+            L.append("    出现但状态是 `Error`、且第二个字段是问题码（43 等）= 驱动/设备问题，"
+                     "重开机或重启该设备后再看。）")
     except Exception as exc:
         L.append(f"- nvidia-smi 探测失败: {exc}")
     L.append("")
 
-    acpi = AtkAcpi()
+    acpi = make_acpi()
     opened = False
+    exc_msg = ""
     try:
         opened = acpi.open()
     except Exception as exc:
-        L.append("## ATKACPI")
-        L.append("")
-        L.append(f"- **打开 `\\\\.\\ATKACPI` 时抛异常**：{type(exc).__name__}: {exc}")
+        exc_msg = f"{type(exc).__name__}: {exc}"
         opened = False
 
     if not opened:
+        # 这个标题只能出现一次：原来在异常分支里先 append 一个 "## ATKACPI"，
+        # 紧接着这里又 append 一个，报告里会出现两个同名小节。
         L.append("## ATKACPI")
         L.append("")
+        if exc_msg:
+            L.append(f"- **打开 `\\\\.\\ATKACPI` 时抛异常**：{exc_msg}")
         L.append("- **打不开 `\\\\.\\ATKACPI`** —— 这台机器不是华硕，或没装 ASUS 驱动。")
         L.append("  装一次 G-Helper 或 MyASUS 会带上这个驱动，然后重跑。")
         L.append("")
@@ -367,6 +473,13 @@ def build_machine_report() -> str:
         for label, cands in (("独显供电", ECO_CANDIDATES), ("显示通路", MUX_CANDIDATES)):
             for dev, line in cands:
                 L.append(f"| {label} | `0x{dev:08X}` | {line} | 打不开通道 | - |")
+        L.append("")
+        # 标题和正常分支保持一致：报告的小节目录不该因为机器不同而不同。
+        # 「设备号全扫」这一段正是补设备号的关键，打不开通道时也要有这一节，
+        # 只是说明这次没能扫。
+        L.append("## 设备号全扫（关键，请勿删）")
+        L.append("")
+        L.append("（ATKACPI 通道打不开，这一段没法扫。装好驱动后重跑就有内容了。）")
         L.append("")
         L.append("---")
         L.append("")
@@ -425,7 +538,7 @@ def build_machine_report() -> str:
 
     L.append("---")
     L.append("")
-    L.append("把上面全部内容贴到 https://github.com/KKT446/GpuCore/issues 即可。")
+    L.append("把上面全部内容贴到 " + branding.APP_REPO + "/issues 即可。")
     return "\n".join(L)
 
 

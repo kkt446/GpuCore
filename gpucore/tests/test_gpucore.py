@@ -61,6 +61,66 @@ def _dir_writable(d: Path) -> bool:
         return False
 
 
+#: 真的会切显卡的用例，必须显式加这个开关才准跑。默认 False = 一个字节都不写 ACPI。
+WRITE_FLAG = "--write"
+_ENFORCE_WRITE = False
+#: main() 这一次实际用的筛选词。**不能**让判定函数自己去读 sys.argv：
+#: main(argv) 是允许带参数调用的，那时 sys.argv 还是进程自己的那份，两者会打架。
+_ACTIVE_KEYWORD = ""
+
+
+def _looks_like_write_only() -> bool:
+    """这次筛选是不是"只选中了写操作用例"（即想单跑写用例）。
+
+    故意做成纯函数（只看筛选词和注册表，不跑任何用例），这样守卫可以逐条断言它，
+    而不必真的去调 main() —— 调 main() 万一开关判定出了纰漏，就真的会切用户的显卡。
+
+    注意不能写成"所有被选中的名字都以 write/ 开头"：筛选是子串匹配，
+    `-k write` 会同时选中只读的 hardware/no-write-by-default（名字里有 write），
+    那样反而判成"不是只跑写用例"。正确判据是"选中的**全都是** write/ 组的"。
+    """
+    kw = _ACTIVE_KEYWORD
+    if not kw:
+        return False
+    sel = [n for n, _ in CHECKS if kw in n]
+    return bool(sel) and all(n.startswith("write/") for n in sel)
+
+
+def _write_guard_ok() -> bool:
+    """写用例的开关判定；不允许写时抛错而不是静默跳过。"""
+    if _ENFORCE_WRITE:
+        return True
+    if _looks_like_write_only():
+        raise AssertionError(
+            f"-k {_ACTIVE_KEYWORD!r} 只选中了写操作用例，却没给 {WRITE_FLAG}："
+            f"这些用例会全部跳过，而报告仍会说「全部通过」——"
+            f"那份「通过」什么都没验证。要真跑请加 {WRITE_FLAG}（会切显卡），"
+            f"否则请换一个筛选词。")
+    return False
+
+
+def _write_allowed() -> bool:
+    """当前这次运行是否被允许真的写 ACPI。
+
+    开关状态必须来自 main() 解析到的那份参数。以前写操作用例直接看 `sys.argv`，
+    于是 `main(["--write"])` 这种程序化调用"给了开关却不生效" —— 写用例静默跳过，
+    报告照样说"通过"。直接读进程参数还会让"外层筛选词"串进内层判定：
+    外层跑 `-k write` 时，内层再调 main([...]) 会看到 `-k write` 并因此报错。
+    """
+    return _write_guard_ok()
+
+
+def _set_run_flags(enforce_write: bool = False, keyword: str = "") -> None:
+    """直接设"这次运行的参数"，不走 main() 的参数解析。
+
+    用途只有两个：让用例能构造出特定状态来断言，以及用完把状态还回去。
+    真跑时这两个值是 main() 按它解析到的参数设的。
+    """
+    global _ENFORCE_WRITE, _ACTIVE_KEYWORD
+    _ENFORCE_WRITE = enforce_write
+    _ACTIVE_KEYWORD = keyword
+
+
 # ---------------------------------------------------------------------------
 # 身份 / 路径
 # ---------------------------------------------------------------------------
@@ -103,7 +163,112 @@ def test_install_ps1_reads_branding() -> None:
         _assert(key in src, f"install.ps1 没读 {key}")
 
 
+@check("suite/no-orphan-tests")
+def test_no_orphan_tests() -> None:
+    """每个 `def test_*` 都必须真的被注册，否则它会静默地永远不跑。
 
+    套件是装饰器注册制（`@check("名字")` 把函数塞进 CHECKS）。删掉装饰器、
+    或者新写一条忘了加，**都不会报错** —— 少跑一条用例没人知道。
+
+    真事：`test_portable_mode` 就这么裸奔了很久（本用例把它当场抓出来了）。
+    它检查的是"源码树不能被判成便携包"和"install_dir 必须落到 <APP_DIR_NAME>"，
+    属于配置读写路径上的关键一条，白白没跑。
+    """
+    me = Path(__file__).resolve()
+    lines = me.read_text(encoding="utf-8").splitlines()
+    orphans = []
+    for i, line in enumerate(lines):
+        m = re.match(r"^def (test_\w+)\s*\(", line)
+        if not m:
+            continue
+        j = i - 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        if j < 0 or not lines[j].lstrip().startswith("@check("):
+            orphans.append(f"第 {i + 1} 行 {m.group(1)}")
+    _assert(not orphans,
+            "这些用例函数没有 @check 装饰器，永远不会执行：" + "、".join(orphans))
+
+    names = re.findall(r'^@check\("([^"]+)"\)', me.read_text(encoding="utf-8"), re.M)
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    _assert(not dupes, f"用例名字重复，报告里分不清是哪条：{dupes}")
+    _assert(len(names) >= 30, f"只注册到 {len(names)} 条用例，套件是不是被误删了")
+
+
+@check("ps1/utf8-bom")
+def test_ps1_has_bom() -> None:
+    """所有 PowerShell 脚本都必须带 UTF-8 BOM。
+
+    Windows PowerShell 5.1（就是 `powershell` 这个命令，本机和 CI runner 上的默认版）
+    **只认 BOM 来决定编码**；没有 BOM 时它按系统 ANSI 代码页（中文机器 = GBK）
+    去解码 UTF-8 字节。结果是脚本里的中文全变成乱码 —— 大多数情况下只是输出难看，
+    但某些字符解码后会吃掉引号或括号的边界，于是报出
+    `Unexpected token '}' in expression or statement` 这类**与真正错误位置毫无关系**
+    的解析错误（报的行号可能比问题行早几百行），排查起来极其费时。
+
+    真事：packaging/build-portable.ps1 一直是 13 个 .ps1 里唯一没 BOM 的那个，
+    在某次加中文注释后突然"语法错误"，实际是编码问题。加了 BOM 立刻就好。
+    """
+    root = branding.bundle_dir()
+    files = subprocess.run(["git", "-c", "core.quotePath=false", "-C", str(root), "ls-files", "*.ps1"],
+                           capture_output=True, text=True, encoding="utf-8", timeout=30)
+    _assert(files.returncode == 0, f"git ls-files 失败：{files.stderr.strip()[:200]}")
+    scripts = [r.strip() for r in files.stdout.splitlines() if r.strip() and not r.startswith("archive/")]
+    _assert(scripts, "一个 .ps1 都没找到，路径或 git 参数有问题")
+
+    missing = []
+    for rel in scripts:
+        p = root / rel
+        if not p.is_file():
+            continue
+        head = p.read_bytes()[:3]
+        if head != b"\xef\xbb\xbf":
+            missing.append(rel)
+    _assert(not missing,
+            "这些 .ps1 没有 UTF-8 BOM，中文 Windows 上 PowerShell 5.1 会按 GBK 解码、"
+            "报出位置完全不对的语法错误：" + "、".join(missing))
+
+
+@check("selftest/keyword-must-match")
+def test_keyword_fail_closed() -> None:
+    """筛选词一个都没选中时必须报错退出 —— 不能给个 0/0 的绿色结果。
+
+    这是本套件最容易出、也最危险的一类失败："看起来全过了，其实什么都没跑"。
+    敲错一个字母（-k hotky）就会命中它：如果只是过滤出空列表照常收尾，
+    报告会说"全部通过 ✓"、退出码 0，和真的过了完全分不出来 ——
+    在 CI 或发布把关里这比直接报错糟得多。
+
+    同一条道理也适用于 hardware.py 的设备号表（见 selftest/no-sibling-device-table）。
+    """
+    root = branding.bundle_dir()
+    cp = subprocess.run([sys.executable, "-m", "gpucore.tests.test_gpucore", "-k", "不会存在的用例名"],
+                        cwd=str(root), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=120)
+    _assert(cp.returncode != 0,
+            f"筛选词没命中却返回成功（退出码 {cp.returncode}）：{cp.stdout.strip()[:300]}")
+    _assert("没有匹配" in cp.stdout, f"没说清为什么没跑任何用例：{cp.stdout.strip()[:300]}")
+    _assert("全部通过" not in cp.stdout, "零用例却印出了「全部通过」")
+
+
+@check("selftest/no-sibling-device-table")
+def test_no_stale_device_table() -> None:
+    """自检模块里不许再出现跟 hardware.py 并列的设备号表。
+
+    selftest.py 里原本有一份 `DEVICES = {...}`，抄的是设备号 —— 但它从未被引用过，
+    真正的探测走的是 hardware.ECO_CANDIDATES / MUX_CANDIDATES / SENSOR_DEVICES。
+    留着它只有坏处：谁想给新机型加设备号，很自然会去改那份"看起来最像表"的表，
+    改完不生效；而它和 hardware.py 只会越来越不一致。
+
+    判据是"表头有没有出现"，不是"有没有别处也写设备号" —— 报告和用例里
+    写死几个已知号是正常的（它们本来就是在断言具体值）。
+    """
+    src = (branding.bundle_dir() / "gpucore" / "selftest.py").read_text(encoding="utf-8")
+    _assert("DEVICES =" not in src,
+            "selftest.py 里又出现了并列的设备号表（DEVICES = ...）；"
+            "设备号只该定义在 gpucore/hardware.py，自检请直接遍历它")
+
+
+@check("branding/portable-mode")
 def test_portable_mode() -> None:
     # 源码树里没有 GpuCore.exe / PORTABLE，应当判为非便携
     _assert(branding.portable_mode() is False, "源码树被误判为便携包")
@@ -123,6 +288,79 @@ def test_config_path() -> None:
     probe.unlink()
     _assert(p.name == "config.json", f"配置文件名不对: {p.name}")
     _assert(branding.log_path().parent == d, "日志与配置不在同一目录")
+
+
+@check("branding/version-single-source")
+def test_version_single_source() -> None:
+    """版本号只能有一个来源：branding.APP_VERSION。
+
+    版本号散落在"输出示例""发布说明""使用说明"里是正常的（用户要看到它），
+    但**每一处都必须等于 APP_VERSION**。踩过的坑就是改了 branding.py
+    忘了改其它地方 —— 用户拿到 1.1.2 的包，里面写着 1.1.0 的说明，
+    报 issue 时按旧说明排障；或者自检输出示例跟实际输出对不上。
+
+    判据：**这一行同时出现品牌名和 `vX.Y.Z`，那就是在说当前版本**，必须等于
+    APP_VERSION。同行的品牌名是关键 —— 这行必须是 GpuCore 自己的版本，
+    而不是它旁边碰巧出现的 Python 版本（`3.12.10 @ C:\\...`）或历史示例。
+
+    排除两类"说的是别的版本、也不该跟着改"的：打包器的 tag 示例（`git tag v1.0.0`）
+    和发布说明/使用说明（要让用户看到"这个版本改了什么"）。另有一条硬要求：
+    README 和当前使用说明**必须**写着当前版本，避免这行被整段删掉后静默通过。
+    """
+    root = branding.bundle_dir()
+    # 一定要 -c core.quotePath=false：否则 git 会把中文文件名输出成
+    # `"\344\275\277\347\224\250..."` 这种八进制转义，后面按路径打开必然失败
+    # —— 而"打不开就跳过"会让中文名的文档**静默地不参与检查**（这条用例第一版
+    # 就栽在这里：使用说明.txt 一直没被读到，误报成"没写版本号"）。
+    files = subprocess.run(["git", "-c", "core.quotePath=false", "-C", str(root), "ls-files"],
+                           capture_output=True, text=True, encoding="utf-8", timeout=30)
+    _assert(files.returncode == 0, f"git ls-files 失败：{files.stderr.strip()[:200]}")
+
+    wanted = branding.APP_VERSION
+    # 品牌名在文本里长这样："GpuCore"、"GpuCore（双芯）"、"GpuCore 机型报告"
+    brand = re.compile(branding.APP_NAME)
+    ver_re = re.compile(r"\bv?(\d+\.\d+\.\d+)\b")
+
+    stale: list[str] = []
+    seen_with_version: set[str] = set()
+    for rel in files.stdout.splitlines():
+        rel = rel.strip()
+        if not rel or rel.startswith("archive/"):
+            continue
+        p = root / rel
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for raw in text.splitlines():
+            if "git tag" in raw or not brand.search(raw):
+                continue
+            m = ver_re.search(raw)
+            if not m:
+                continue
+            if m.group(1) == wanted:
+                seen_with_version.add(rel)
+                continue
+            stale.append(f"{rel} 这一行写着 {m.group(1)}（当前是 {wanted}）：{raw.strip()[:70]}")
+
+    _assert(not stale,
+            "版本号漂了，改 branding.APP_VERSION 时要一起改：\n      "
+            + "\n      ".join(sorted(stale)))
+
+    # 光"没写错"不够：那行被删掉也能过。当前使用说明必须能让用户看到版本号。
+    for req in ("README.md", "使用说明.txt"):
+        _assert(req in seen_with_version,
+                f"{req} 里找不到写着当前版本 {wanted} 的 GpuCore 那一行"
+                f" —— 用户拿到包不知道装的是哪版")
+
+    notes = root / "RELEASE-NOTES.md"
+    if notes.exists():
+        head = notes.read_text(encoding="utf-8").strip().splitlines()[0]
+        _assert(wanted in head,
+                f"RELEASE-NOTES.md 第一行是 {head[:60]!r}，没写当前版本 {wanted}"
+                f" —— 发布说明过期了，GitHub Release 上会贴错内容")
 
 
 # ---------------------------------------------------------------------------
@@ -242,17 +480,45 @@ def test_read_eco() -> None:
 
 @check("hardware/no-write-by-default")
 def test_no_write_by_default() -> None:
-    # 防回归：这个测试套件本身绝不能默认写 ACPI —— 会切用户的显卡。
-    # 断言「所有写操作都只出现在 test_write_* 函数里」。
-    import inspect
+    """防回归：这个测试套件本身绝不能默认写 ACPI —— 会切用户的显卡。
 
-    for fn in (test_write_eco,):
-        _assert("--write" in inspect.getsource(fn), f"{fn.__name__} 没有 --write 保护")
+    两道关都得在，缺一个都可能真的动用户的显卡：
+
+      * 所有名字以 `write/` 开头的用例，必须**真的**检查开关。这里读的是函数的
+        源码字节，不看运行时行为 —— 以前只检查"源码里出现过 --write 字样"，
+        而那行判断如果被改成恒假（或者干脆读错变量），源码里照样有这几个字符，
+        用例还是会过。所以这里要求它出现 `_write_allowed()`，并禁止再直接读
+        `sys.argv`（读 sys.argv 会让程序化调用 main(["--write"]) 静默失效）。
+      * 只读用例里不许出现任何写调用。以前只扫 `hardware/` 和 `metrics/` 两组，
+        漏了 `config/`、`autostart/`、`ui/`、`hotkey/`。
+    """
+    import inspect
+    import re
+
+    write_checks = [(n, f) for n, f in CHECKS if n.startswith("write/")]
+    _assert(write_checks, "一条 write/ 用例都没有？开关的语义没人守了")
+    for name, fn in write_checks:
+        src = inspect.getsource(fn)
+        _assert("_write_allowed()" in src,
+                f"{name} 没有用 _write_allowed() 把关 —— 它会无视有没有 {WRITE_FLAG} 就写 ACPI")
+        # 这里必须只认"真的在代码里下标取值"（sys.argv[），不能连注释和文档字符串里
+        # 提一句 sys.argv 都算 —— 否则这条守卫会变成"不许解释为什么不能用它"。
+        _assert(re.search(r"\bsys\.argv\b\s*\[", src) is None,
+                f"{name} 直接读了 sys.argv —— 程序化调用 main([...]) 时开关会失效，"
+                f"应当改用 _write_allowed()")
+
     for name, fn in CHECKS:
-        if name.startswith(("hardware/", "metrics/")) and not name.endswith("no-write-by-default"):
-            src = inspect.getsource(fn)
-            for bad in ("write_eco(", "write_mux(", "switch_eco(", "switch_mux("):
-                _assert(bad not in src, f"只读用例 {name} 里出现了 {bad}，会真的改显卡状态")
+        if name.startswith("write/"):
+            continue
+        src = inspect.getsource(fn)
+        # 用"真的在调用"的形状去匹配，不要用裸子串 —— 否则这条守卫自己就会
+        # 因为源码里列出了这些名字（下面 for 循环里的字面量）而被自己抓出来。
+        # switch_* 是 Monitor 上的方法，只读用例碰都不该碰；
+        # write_* 只允许出现在模块级函数定义那一行（那就是写操作用例本身）。
+        for bad in (r"\bswitch_eco\s*\(", r"\bswitch_mux\s*\(",
+                    r"(?m)^\s*def\s+write_eco\s*\(", r"(?m)^\s*def\s+write_mux\s*\("):
+            _assert(re.search(bad, src) is None,
+                    f"只读用例 {name} 里出现了 {bad}，会真的改显卡状态")
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +896,61 @@ def test_cli_report() -> None:
         _assert("G-Helper" in out or "MyASUS" in out,
                 "ATKACPI 打不开时没有告诉用户怎么补驱动")
 
+    # 每一段的标题都只能出现一次。原来 acpi.open() 抛异常的分支会先 append
+    # 一个「## ATKACPI」，紧接着「打不开」分支又 append 一个 ——
+    # 报告里出现两个同名小节，读的人第一反应是"这份报告是不是被拼坏了"。
+    for section in ("## 机器", "## 显卡", "## 机型自适应结果",
+                    "## 候选设备号探测", "## ATKACPI"):
+        got = out.count(section)
+        _assert(got <= 1, f"「{section}」在报告里出现了 {got} 次（每个小节只能有一次）")
+
+    # 收尾只该有一句"贴到 issue"，且必须是 branding 里那个仓库
+    footer = [x for x in out.splitlines() if "issues 即可" in x]
+    _assert(len(footer) == 1, f"收尾指引有 {len(footer)} 条（只该有一条）：{footer}")
+    _assert(branding.APP_REPO in footer[0],
+            f"收尾指引里的仓库地址不对（应来自 branding.APP_REPO）：{footer[0]}")
+
+    # 显示类设备状态：这是分开"独显断电省电"和"驱动坏了"的唯一依据
+    _assert("显示类设备状态" in out, "报告没有显示类设备状态那一行")
+
+
+@check("selftest/report-acpi-unavailable")
+def test_report_without_acpi() -> None:
+    """ATKACPI 打不开时，报告仍要完整、且每个标题只出现一次。
+
+    这条分支在开发机上跑不到（本机通道是好的），但它恰恰是最容易写坏的一段：
+    早期版本在这里直接 `return`，非华硕机器上连「候选设备号探测」都看不到 ——
+    而那一节正是用来判断"这台机器缺哪个设备号"的。后来又出现过同名标题重复。
+    所以这里塞一个**打不开通道的假对象**进去，把这套行为钉死。
+    """
+
+    class _DeadAcpi:
+        def open(self) -> bool:
+            return False
+
+    from gpucore import selftest
+
+    rep = selftest.build_machine_report(acpi_factory=_DeadAcpi)
+    for section in ("## 机器", "## 显卡", "## 机型自适应结果",
+                    "## 候选设备号探测", "## 设备号全扫（关键，请勿删）"):
+        _assert(section in rep, f"打不开通道时报告缺少「{section}」段")
+
+    # 原来这里会因为异常分支和"打不开"分支各 append 一次而出现两个
+    _assert(rep.count("## ATKACPI") == 1,
+            f"「## ATKACPI」出现了 {rep.count('## ATKACPI')} 次（只该有一次）")
+
+    # 每个候选号都要有一行，并写明是"打不开通道"而不是"不支持" ——
+    # 两者含义完全不同：前者是没法探测，后者是探到了、这个号不认。
+    from gpucore.hardware import ECO_CANDIDATES, MUX_CANDIDATES
+    for dev, _line in list(ECO_CANDIDATES) + list(MUX_CANDIDATES):
+        _assert(f"0x{dev:08X}" in rep, f"打不开通道时漏掉了候选号 0x{dev:08X}")
+    _assert("打不开通道" in rep, "候选表没说清这些号是没能探测，还是真的不支持")
+
+    # 通道打不开不等于设备号没扫过：这一段的标题必须仍然出现（它是补设备号的关键），
+    # 但要说清这次是"没能扫"而不是"扫了没有"。
+    _assert("通道打不开，这一段没法扫" in rep,
+            "打不开通道时没有说明「设备号全扫」为什么是空的")
+
 
 @check("cli/unknown-arg")
 def test_cli_unknown() -> None:
@@ -644,10 +965,99 @@ def test_cli_unknown() -> None:
 # 写操作（默认跳过，只有 --write 才跑，会真的切显卡！）
 # ---------------------------------------------------------------------------
 
+@check("write/flag-is-fail-closed")
+def test_write_flag_fail_closed() -> None:
+    """写开关的失法都要被堵住（它们都会"报告成功但什么都没验证"）。
+
+    `-k write` 却不给 --write 这个组合最阴：写用例全部静默跳过，
+    收尾却照样印「1/1 通过 · 全部通过 ✓」，看起来像是写路径验过了 ——
+    实际一个字节都没写。
+
+    这里**故意不调 main()**：main() 会真的把选中的用例跑一遍，万一开关判定
+    出了纰漏，这条元用例就会亲手去切用户的显卡。所以下面走的是纯函数
+    （_looks_like_write_only / _write_guard_ok / _write_allowed），
+    只验"判定逻辑"，一个 ACPI 字节都不写。
+
+    顺带钉住一条运行态契约：main() 的开关必须跟它**自己解析到的**参数一致，
+    不能跑去看 sys.argv —— 否则外层 `-k write` 会把内层的判定带歪（真踩过）。
+    """
+    # ① -k switch-eco 不给 --write：必须判成"只选了写用例"，且必须报错、不许静默跳过
+    #    （这里不能用 -k write：它还会选中只读的 hardware/no-write-by-default，
+    #      于是选的并不全是写用例，属于正常用法）
+    kw = "switch-eco"
+    assert callable(main)
+    _set_run_flags()
+
+    _set_run_flags(False, kw)
+    _assert(_looks_like_write_only(), f"-k {kw!r} 应当被认成「只跑了写用例」")
+    try:
+        _write_guard_ok()
+    except AssertionError as exc:
+        _assert(WRITE_FLAG in str(exc), f"报错里没说清该加哪个开关：{exc}")
+    else:
+        raise AssertionError(f"-k {kw} 没给 {WRITE_FLAG}，却静默通过了")
+
+    # ② -k switch-eco 带了 --write：必须真的判成"允许写"
+    _set_run_flags(True, kw)
+    _assert(_write_allowed(), f"给了 {WRITE_FLAG} 却没把开关打开")
+
+    # ③ 无关筛选词（比如 -k hardware）即使不给 --write 也不该报错 ——
+    #    它选中了只读用例，是正常用法
+    _set_run_flags(False, "hardware")
+    _assert(not _looks_like_write_only(), "-k hardware 被误判成只跑了写用例")
+    _assert(not _write_allowed(), "-k hardware 竟然被允许写 ACPI")
+
+    # ③b 反过来钉一下 -k write 确实不会被误判（它同时命中一条只读用例）
+    _set_run_flags(False, "write")
+    _assert(not _looks_like_write_only(),
+            "-k write 被误判成只跑了写用例 —— 它明明还选中了 hardware/no-write-by-default")
+    _assert(not _write_allowed(), "-k write 竟然被允许写 ACPI")
+
+    # ④ main() 必须按自己解析到的参数设开关。
+    #    这里**只做静态检查，绝不调 main()**：带 --write 调 main() 会真的把写操作用例
+    #    跑一遍，也就是真的切用户显卡 —— 这条元用例自己踩过这个坑（递归调
+    #    main(["--write"]) 把独显断了电）。"代码里是不是这么写的"用源码就能验，
+    #    没必要拿用户硬件去验。
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(main)))
+    assigns = [n for n in ast.walk(tree)
+               if isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == "_ENFORCE_WRITE" for t in n.targets)]
+    _assert(assigns, "main() 里找不到对 _ENFORCE_WRITE 的赋值 —— 开关没人设了")
+    # 只看"右边有没有用 argv 这个名字"，不做形状匹配：`WRITE_FLAG in argv` 之类
+    # 随写法变，但只要用的是 main() 自己的参数就够了。
+    _assert(any(isinstance(sub, ast.Name) and sub.id == "argv"
+                for n in assigns for sub in ast.walk(n.value)),
+            "main() 设开关时没用自己的 argv 参数（又回去读进程参数了？）")
+
+    # ⑤ 判定函数不许偷偷看"进程参数"。这条比 ④ 更狠：直接伪造 sys.argv，
+    #    如果 _write_allowed() 真的去读它，结果就会被带歪。
+    real_argv = list(sys.argv)
+    try:
+        sys.argv = ["test_gpucore"]
+        _set_run_flags(False, kw)
+        try:
+            _write_allowed()
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                "_write_allowed() 的结果受 sys.argv 影响了 —— 它本该只看 _ACTIVE_KEYWORD")
+    finally:
+        sys.argv = real_argv
+
+    # 用完把运行态还回去，别污染后面跑的用例
+    _set_run_flags()
+    _assert(not _write_allowed(), "运行态没还回去：复位之后仍被认为允许写 ACPI")
+
+
 @check("write/switch-eco")
 def test_write_eco() -> None:
-    if "--write" not in sys.argv:
-        print("      （跳过：加 --write 才会真的写 ACPI）")
+    if not _write_allowed():
+        print(f"      （跳过：加 {WRITE_FLAG} 才会真的写 ACPI）")
         return
     acpi = hardware.AtkAcpi()
     if not acpi.open():
@@ -688,6 +1098,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         if i + 1 < len(argv):
             keyword = argv[i + 1]
 
+    # 写开关只认 main() 自己解析到的参数（不读 sys.argv），这样程序化调用
+    # `main(["--write"])` 也真的会跑写用例，而不是静默跳过还报"通过"。
+    global _ENFORCE_WRITE, _ACTIVE_KEYWORD
+    _ENFORCE_WRITE = WRITE_FLAG in argv
+    _ACTIVE_KEYWORD = keyword
+
     # 主窗口不要弹出来
     os.environ.setdefault("GPUCORE_NO_GUI", "1")
 
@@ -702,10 +1118,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
 
     selected = [(n, f) for n, f in CHECKS if not keyword or keyword in n]
+
+    # 筛选词一个都没匹配上时必须**报错退出**，不能沉默地"全部通过"。
+    # 后果实测过：敲错的筛选词（-k hotky）会得到一个 0/0 的绿色结果和退出码 0，
+    # 在 CI 或发布把关里看起来跟"整套都过了"一模一样 —— 这正是本套件
+    # 最该避免的那类失败（同 suite/no-orphan-tests 守的是一回事）。
+    if keyword and not selected:
+        print(f"筛选词 {keyword!r} 没有匹配到任何用例：{len(CHECKS)} 项里的名字都不会被它选中。")
+        print("可用名字（也可只写其中一段，例如 hardware）：")
+        print("  " + "\n  ".join(n for n, _ in CHECKS))
+        return 2
+
     print(f"GpuCore 自测：{len(selected)} 项"
           + (f"（筛选 {keyword!r}）" if keyword else "")
           + ("  [含写 ACPI 用例]" if "--write" in argv else ""))
     print("=" * 72)
+
+    # 没给筛选词时要跑的就是全部用例；数量对不上说明注册表被别的东西动过。
+    if not keyword:
+        _assert(len(selected) == len(CHECKS),
+                f"没给筛选词，却只选中 {len(selected)}/{len(CHECKS)} 项")
 
     failed: List[Tuple[str, str]] = []
     t0 = time.time()
