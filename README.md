@@ -66,7 +66,7 @@ GpuCore 走的是**厂商硬件通道**：通过华硕的 `\\.\ATKACPI` 接口�
 
 ### 方式一：免安装版（推荐，别人用这个）
 
-到 [Releases](https://github.com/KKT446/GpuCore/releases/latest) 下载 `GpuCore-x.y.z-portable.zip`（约 54 MB），解压到任意目录，双击 `GpuCore.exe`。
+到 [Releases](https://github.com/KKT446/GpuCore/releases/latest) 下载 `GpuCore-x.y.z-portable.zip`（14.3 MB，2026-10 起从 54 MB 瘦下来），解压到任意目录，双击 `GpuCore.exe`。
 
 **目标机什么都不需要装**——包里自带整套 Python 3.12 运行时。不用管理员、不装驱动、不改系统设置。删掉文件夹就是卸载干净（记得先在设置里取消开机自启）。
 
