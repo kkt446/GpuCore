@@ -91,8 +91,13 @@ def _check_acpi(rep: Report) -> Optional[object]:
 
     acpi = AtkAcpi()
     if not acpi.open():
-        rep.add("\\\\.\\ATKACPI 通道", FAIL,
-                "打不开。这台机器可能不是华硕，或缺少 ASUS 驱动（装 G-Helper 或 MyASUS 会带上）")
+        # 这里必须是 WARN 而不是 FAIL：自检的 FAIL 含义是"这台机器上 GpuCore 坏了"，
+        # 而"不是华硕/没装 ASUS 驱动"是**平台不适用**，不是缺陷。
+        # 记成 FAIL 的后果实测过两次：非华硕机器上 --check 返回 1，
+        # GitHub Actions 的 windows runner 因此永远红（虚机里当然没有华硕固件通道）。
+        rep.add("\\\\.\\ATKACPI 通道", WARN,
+                "打不开 —— 这台机器不是华硕，或缺少 ASUS 驱动（装 G-Helper 或 MyASUS 会带上）。"
+                "此版本固件相关功能在本机不可用。")
         return None
     rep.add("\\\\.\\ATKACPI 通道", OK, "可打开（普通用户权限即可）")
 
@@ -229,7 +234,8 @@ def print_report(rep: Report) -> int:
     print("-" * 66)
     if rep.failed:
         print(f"  结果：{len(rep.failed)} 项失败，{len(rep.warned)} 项警告")
-        print("  → 上面标 [FAIL] 的就是这台机器缺的东西。")
+        print("  → [FAIL] 是本程序在这台机器上真的没能工作；[WARN] 多数是平台不适用或缺驱动。")
+        print("     请把上面的全部内容贴到 issue 里。")
     elif rep.warned:
         print(f"  结果：全部通过，{len(rep.warned)} 项警告（一般不影响使用）")
     else:

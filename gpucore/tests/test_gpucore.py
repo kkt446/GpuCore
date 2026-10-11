@@ -529,11 +529,14 @@ def test_cli() -> None:
                         encoding="utf-8", errors="replace", timeout=120, env=env)
     out = cp.stdout
     _assert("自检" in out or "GpuCore" in out, f"--check 没输出报告: {out[:200]}")
-    # 只断言「跑到结论了」。不能断言「全部通过」——别人的机器上确实可能缺驱动，
-    # 那是环境问题，不是崩溃（GitHub 的 windows runner 上就是这样）。
+    # 只断言「跑到结论了 + 退出码 0」。不能断言「全部通过」——别人的机器上
+    # 缺 ASUS 驱动、独显断电都是**平台不适用**，自检把这类情况记成 WARN，
+    # 那不是缺陷（GitHub 的 windows runner 上就是这样）。
     _assert("结果：" in out, f"--check 报告没走到结论（可能被中途的异常带走了）:\n{out[-500:]}")
     _assert("（这一组崩了）" not in out,
             f"--check 有检查组整体崩溃，报告是残的:\n{out[-1500:]}")
+    _assert("[FAIL]" not in out,
+            f"自检把平台不适用的情况记成了失败（应当记 WARN）:\n{out[-1500:]}")
     _assert(cp.returncode == 0, f"--check 未通过：\n{out[-1500:]}\n{cp.stderr[-500:]}")
 
 
@@ -585,10 +588,14 @@ def test_cli_report() -> None:
     for section in ("## 机器", "## 显卡", "## 机型自适应结果", "## 候选设备号探测"):
         _assert(section in out, f"报告缺少「{section}」段:\n{out[:600]}")
 
-    # 候选表必须两种结果都在：支持的报 raw，不支持的也要列出来。
-    # 只列命中的号，看的人就不知道「哪些候选被试过但没中」了。
-    _assert("支持" in out, "候选表里一个命中的候选都没有（本机至少应命中一个）")
-    _assert("不支持" in out or "打不开" in out, "候选表没有报出未命中的候选")
+    # 候选表必须报出结果，但**不能要求本机一定命中**：
+    # 非华硕机器（CI 的 windows runner 就是）上一个候选都打不开，
+    # 那时「打不开通道」正是正确输出。这条断言原来要求"至少命中一个"，
+    # 在 runner 上必然失败——那是把环境差异当成了缺陷。
+    _assert("支持" in out or "打不开" in out, "候选表既没说命中也说打不开，看不出探测结果")
+    if "打不开" not in out:
+        # 通道能打开时，未命中的候选也必须列出来（否则看的人不知道试过哪些号）
+        _assert("不支持" in out, "候选表只列了命中的号，没报出试过但未命中的候选")
 
     # 打不开通道时给出明确的下一步，而不是只报错
     if "打不开" in out:
