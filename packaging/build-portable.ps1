@@ -125,8 +125,24 @@ $libKeep = @(
 $libDst = Join-Path $pyDst 'Lib'
 $removed = 0
 $removedBytes = 0
+
+# site-packages 一律删掉，不做白名单判断：GpuCore 只用标准库 + tkinter + ctypes，
+# 里面全是第三方包，一个都不需要。这条实测有价值 —— 借用的运行时素材
+# （DSH 那份 Python 3.12.14）自带 numpy/pandas/lxml/Pillow/python-docx 等，
+# 不删的话包会白胖 24 MB（151.6 MB vs CI 干净 CPython 的 127.8 MB）。
+# 顺带把 pip 也带走：免安装包不需要装任何东西。
+$sp = Join-Path $libDst 'site-packages'
+if (Test-Path $sp) {
+    $bytes = (Get-ChildItem $sp -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+    $n = (Get-ChildItem $sp -Recurse -File -ErrorAction SilentlyContinue).Count
+    $removedBytes += $bytes
+    if ($KeepPruned) { Move-Item $sp (Join-Path $pruned 'site-packages') -Force }
+    else            { Remove-Item $sp -Recurse -Force }
+    Ok ("删掉 site-packages（{0} 个文件，省 {1:N1} MB）" -f $n, ($bytes / 1MB))
+}
+
 foreach ($item in Get-ChildItem $libDst -Force) {
-    if ($item.Name -in @('site-packages', '__pycache__')) { continue }
+    if ($item.Name -eq '__pycache__') { continue }
     if ($item.Name -in $libKeep) { continue }
     $bytes = (Get-ChildItem $item.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
     $removed++
