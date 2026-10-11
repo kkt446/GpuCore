@@ -1,0 +1,63 @@
+name: 别的华硕机型跑不通 / 想贡献设备号
+description: 换一台华硕电脑（或非华硕机器）跑一次机型报告，把整段输出贴回来
+title: "[机型] 品牌 型号 —— 切换功能可用/不可用"
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 怎么产出这份报告
+
+        1. 下载最新免安装包（[Releases](https://github.com/KKT446/GpuCore/releases/latest)）并解压
+        2. 打开命令行（cmd 或 PowerShell），`cd` 到解压出的目录
+        3. 运行 `GpuCore.exe --report`（源码方式是 `python -m gpucore --report`）
+        4. 把**整段输出**粘贴到下面的报告区
+
+        > `--report` 是一份 markdown，只做**读**操作，不写任何设备号，可以放心跑。
+        > 最关键的是最后两段的「设备号全扫」——它是判断这台机器缺哪个设备号的唯一凭据，
+        > **请勿删减**。
+
+  - type: textarea
+    id: report
+    attributes:
+      label: 机型报告（GpuCore.exe --report 的完整输出）
+      description: 直接粘贴，保留原样的 markdown，不要删段
+      placeholder: "# GpuCore 机型报告 v1.1.1 ..."
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 哪一步不对，越具体越好
+      placeholder: |
+        界面能打开，但「独显模式」「独显直连」两个按钮都是灰的。
+        机器型号：ASUS VivoBook X1504VA
+        Windows 版本：Windows 11 24H2
+        装过 MyASUS，没装 G-Helper。
+    validations:
+      required: false
+
+  - type: dropdown
+    id: atkacpi
+    attributes:
+      label: 有没有装过 G-Helper / MyASUS
+      description: 这两个软件会带上 ATKACPI 驱动；没有这个驱动，任何华硕切换工具都用不了
+      options:
+        - 装过 G-Helper
+        - 装过 MyASUS
+        - 两个都装过
+        - 都没装
+        - 不确定
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 报告里包含最后两段「设备号全扫」，没有被删减
+          required: true

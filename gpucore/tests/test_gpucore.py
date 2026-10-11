@@ -151,6 +151,34 @@ def test_hardware_candidates() -> None:
         _assert(key in hardware.SENSOR_DEVICES, f"传感器缺少 {key}")
 
 
+@check("hardware/candidate-order-is-stable")
+def test_candidate_order() -> None:
+    """候选表的**顺序**是兼容性契约，新号只能追加，不能插队。
+
+    探测逻辑是"按顺序试，第一个回非零 raw 的胜出"。如果把一个新号插到列表前面，
+    本来解析到 A 号的老机器可能改成解析到 B 号 —— 而 B 号在老机器上到底是不是
+    同一个功能、取值含义是否一致，是**没验证过**的。所以第一个位置必须钉住：
+
+      * 0x00090020（ROG/TUF 独显供电）—— FX608LM 实测命中，必须仍是首选
+      * 0x00090016（ROG/TUF 显示通路）—— 同上
+
+    给新机型加号时追加到末尾即可，这条用例不会拦你；插到前面就会被拦下。
+    """
+    _assert(hardware.ECO_CANDIDATES[0][0] == 0x00090020,
+            f"独显供电首选号被改动了：{hardware.ECO_CANDIDATES[0][0]:#010x}"
+            f" —— 新机型请追加到列表末尾")
+    _assert(hardware.MUX_CANDIDATES[0][0] == 0x00090016,
+            f"显示通路首选号被改动了：{hardware.MUX_CANDIDATES[0][0]:#010x}"
+            f" —— 新机型请追加到列表末尾")
+    for label, cands in (("ECO", hardware.ECO_CANDIDATES), ("MUX", hardware.MUX_CANDIDATES)):
+        devs = [d for d, _ in cands]
+        _assert(len(devs) == len(set(devs)), f"{label}_CANDIDATES 里有重复的设备号：{devs}")
+        _assert(len(cands) >= 2, f"{label}_CANDIDATES 至少要有两个候选（ROG/TUF 与 VivoBook 各一）")
+        for dev, line in cands:
+            _assert(isinstance(line, str) and line.strip(),
+                    f"{label} 候选 {dev:#010x} 没有产品线说明，报告里就说不清它来自哪个机型")
+
+
 @check("hardware/acpi-open")
 def test_acpi_open() -> None:
     acpi = hardware.AtkAcpi()
