@@ -10,7 +10,7 @@
 
 ![GpuCore 面板](assets/panel-preview.png)
 
-> 上图是真实渲染截图，不是设计稿。右下角常驻，`Ctrl+Alt+G` 呼出，再按一次收起。
+> 上图是测试版真实渲染截图(将随新版本一齐上传github)，不是设计稿。右下角常驻，`Ctrl+Alt+G` 呼出，再按一次收起。
 
 ---
 
@@ -256,9 +256,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build-portable.ps1
 
 ## 致谢
 
-硬件切换的具体流程——尤其是「写 ACPI 之前必须先结束占用独显的进程」这一条——参考了 [G-Helper](https://github.com/seerge/g-helper) 的实现，非常值得一看。
-
-行为逻辑上参考过 [JasonHu051219/GPUSwitch](https://github.com/JasonHu051219/GPUSwitch) 的注册表偏好方案（GpuCore 在没有厂商通道的机器上会降级到同样的做法）。
+硬件切换的具体流程——尤其是「写 ACPI 之前必须先结束占用独显的进程」这一条——参考了 [G-Helper](https://github.com/seerge/g-helper) 的实现，非常值得一看，我们将其的自动切换显卡改为主动切换。
 
 ## 许可
 
