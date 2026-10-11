@@ -117,7 +117,13 @@ def _check_acpi(rep: Report) -> Optional[object]:
         rep.add("显示通路切换", INFO, "本机没有 MUX 开关（很多轻薄本确实没有，属正常）")
 
     for key, dev in dm.sensors.items():
-        val = acpi.get(dev)
+        try:
+            val = acpi.get(dev)
+        except Exception as e:
+            # 传感器读失败只该是这一项的问题，不该影响后面的检查
+            rep.add(f"  传感器 {SENSOR_DEVICES[key][1]}", WARN,
+                    f"0x{dev:08X} 读不到（{type(e).__name__}: {e}）")
+            continue
         rep.add(f"  传感器 {SENSOR_DEVICES[key][1]}", OK, f"0x{dev:08X} = {val}")
 
     for note in dm.notes:
@@ -181,13 +187,32 @@ def _check_hotkey(rep: Report) -> None:
         rep.add("全局热键通路", FAIL, f"{e}")
 
 
+def _run_group(rep: Report, name: str, fn) -> None:
+    """跑一组检查，保证它**不会把整份报告带走**。
+
+    这条是 GitHub Actions 上真踩出来的：
+    windows runner（Hyper-V 虚机、没有 ATKACPI）上 `_check_acpi` 中途抛异常，
+    run_self_test 直接把异常抛穿，print_report 根本没被调用 ——
+    用户看到的就是一份**从中间截断、没有结论**的报告，等于反馈通道没了。
+    自检报告唯一的用处就是"出问题时给人看"，所以它自己绝不允许因为一处异常而变残。
+    """
+    try:
+        fn(rep)
+    except Exception as e:
+        import traceback
+        rep.add(f"{name}（这一组崩了）", FAIL, f"{type(e).__name__}: {e}")
+        for line in traceback.format_exc().splitlines()[-4:]:
+            rep.add("", INFO, line)
+
+
 def run_self_test() -> Report:
     rep = Report()
     rep.add("GpuCore 自检", INFO, f"{branding.APP_NAME} v{branding.APP_VERSION}")
-    _check_environment(rep)
-    _check_acpi(rep)
-    _check_gpus(rep)
-    _check_hotkey(rep)
+    for name, fn in (("运行环境", _check_environment),
+                     ("华硕固件通道", _check_acpi),
+                     ("显卡与读数", _check_gpus),
+                     ("全局热键", _check_hotkey)):
+        _run_group(rep, name, fn)
     return rep
 
 
@@ -304,11 +329,42 @@ def build_machine_report() -> str:
     L.append("")
 
     acpi = AtkAcpi()
-    if not acpi.open():
+    opened = False
+    try:
+        opened = acpi.open()
+    except Exception as exc:
+        L.append("## ATKACPI")
+        L.append("")
+        L.append(f"- **打开 `\\\\.\\ATKACPI` 时抛异常**：{type(exc).__name__}: {exc}")
+        opened = False
+
+    if not opened:
         L.append("## ATKACPI")
         L.append("")
         L.append("- **打不开 `\\\\.\\ATKACPI`** —— 这台机器不是华硕，或没装 ASUS 驱动。")
         L.append("  装一次 G-Helper 或 MyASUS 会带上这个驱动，然后重跑。")
+        L.append("")
+        # 通道不可用时这里**不能提前返回**：环境部分（机型、显卡）和下面这几段
+        # 才是这份报告真正要交回来的东西。原来直接 return，非华硕机器上
+        # 连「候选设备号探测」都看不到 —— 而那一节正是用来判断"缺少哪个号"的。
+        L.append("## 机型自适应结果")
+        L.append("")
+        L.append("- 独显供电切换 : 不可用（ATKACPI 通道打不开）")
+        L.append("- 显示通路切换 : 不可用（ATKACPI 通道打不开）")
+        L.append("")
+        L.append("## 候选设备号探测")
+        L.append("")
+        L.append("用**读**的方式试每一个候选号，不写任何东西。")
+        L.append("")
+        L.append("| 用途 | 设备号 | 产品线 | 结果 | raw |")
+        L.append("|---|---|---|---|---|")
+        for label, cands in (("独显供电", ECO_CANDIDATES), ("显示通路", MUX_CANDIDATES)):
+            for dev, line in cands:
+                L.append(f"| {label} | `0x{dev:08X}` | {line} | 打不开通道 | - |")
+        L.append("")
+        L.append("---")
+        L.append("")
+        L.append(f"把上面全部内容贴到 {branding.APP_REPO}/issues 即可。")
         return "\n".join(L)
 
     dm = probe_devices(acpi)

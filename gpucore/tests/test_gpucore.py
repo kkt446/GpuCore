@@ -527,9 +527,47 @@ def test_cli() -> None:
         _assert(cp.returncode == 0, f"`gpucore {' '.join(args)}` 退出码 {cp.returncode}: {cp.stderr[-300:]}")
     cp = subprocess.run([py, "-m", "gpucore", "--check"], capture_output=True,
                         encoding="utf-8", errors="replace", timeout=120, env=env)
-    _assert("自检" in cp.stdout or "GpuCore" in cp.stdout, f"--check 没输出报告: {cp.stdout[:200]}")
-    _assert("✓" in cp.stdout or "全部通过" in cp.stdout, f"--check 报告没走到结论（可能崩在中途）:\n{cp.stdout[-400:]}")
-    _assert(cp.returncode == 0, f"--check 未通过：\n{cp.stdout[-1500:]}\n{cp.stderr[-500:]}")
+    out = cp.stdout
+    _assert("自检" in out or "GpuCore" in out, f"--check 没输出报告: {out[:200]}")
+    # 只断言「跑到结论了」。不能断言「全部通过」——别人的机器上确实可能缺驱动，
+    # 那是环境问题，不是崩溃（GitHub 的 windows runner 上就是这样）。
+    _assert("结果：" in out, f"--check 报告没走到结论（可能被中途的异常带走了）:\n{out[-500:]}")
+    _assert("（这一组崩了）" not in out,
+            f"--check 有检查组整体崩溃，报告是残的:\n{out[-1500:]}")
+    _assert(cp.returncode == 0, f"--check 未通过：\n{out[-1500:]}\n{cp.stderr[-500:]}")
+
+
+@check("selftest/group-crash-is-contained")
+def test_selftest_resilience() -> None:
+    """一组检查炸了，不能把整份报告带走。
+
+    这条是 GitHub Actions 上真踩出来的：windows runner 上 `_check_acpi` 抛异常，
+    异常一路抛穿 run_self_test，print_report 根本没被调用，
+    用户拿到的是一份**从中间截断、没有结论**的报告 —— 反馈通道就没了。
+    """
+    from gpucore.selftest import INFO, _run_group, print_report, run_self_test
+    from io import StringIO
+    import contextlib
+
+    rep = run_self_test()
+    _assert(rep.items, "自检一项都没产出")
+    _assert(any(i.name.startswith("GpuCore 自检") for i in rep.items), "缺少抬头项")
+
+    def boom(_rep):
+        raise RuntimeError("模拟某组检查崩了")
+
+    _run_group(rep, "模拟组", boom)
+    names = [i.name for i in rep.items]
+    _assert("模拟组（这一组崩了）" in names, f"崩溃的组没有被记成一项: {names[-4:]}")
+    detail = " ".join(i.detail or "" for i in rep.items)
+    _assert("模拟某组检查崩了" in detail, "崩溃原因没写进报告")
+
+    buf = StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = print_report(rep)
+    text = buf.getvalue()
+    _assert("结果：" in text, "崩溃之后报告没走到结论")
+    _assert(code == 1, "有失败项时 print_report 应当返回 1")
 
 
 @check("cli/report")
