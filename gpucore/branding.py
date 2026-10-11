@@ -13,7 +13,7 @@ from pathlib import Path
 APP_NAME = "GpuCore"
 APP_NAME_CN = "双芯"
 APP_TAGLINE = "显卡热切换 + 资源监视"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_REPO = "https://github.com/KKT446/GpuCore"
 
 # --- 路径 ---

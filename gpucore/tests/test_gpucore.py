@@ -474,6 +474,49 @@ def test_ui_mode_gating() -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+@check("packaging/launcher-console-flags")
+def test_launcher_console_flags() -> None:
+    """启动器必须把每个「要看输出」的 CLI 参数认成 consoleMode。
+
+    这条红线来自一次真实的静默事故：`--report` 加进 app.py 之后忘了同步
+    packaging/launcher.cs，结果 `GpuCore.exe --report` **退出码 0、一个字都不打印**
+    （走的是 pythonw.exe + CreateNoWindow，stdout 是无效句柄）。
+    这种失败不会报错，只能靠测试守住。
+    """
+    root = branding.bundle_dir()
+    cs = root / "packaging" / "launcher.cs"
+    if not cs.exists():
+        return  # 只有仓库里有启动器源码；装好的程序里没有
+    src = cs.read_text(encoding="utf-8", errors="replace")
+
+    # launcher.cs 里判定到的所有长开关
+    flags = set(re.findall(r'\bs\s*==\s*"(--[a-z][a-z\-]*)"', src))
+    _assert(flags, "launcher.cs 里一个 CLI 开关都没读到，正则可能失效了")
+
+    # consoleMode 那段白名单里出现的开关
+    block = re.search(r"bool consoleMode = false;(.*?)\n        \}", src, re.S)
+    _assert(block, "launcher.cs 里找不到 consoleMode 判定块")
+    body = block.group(1)
+    whitelisted = set(re.findall('"(--[a-z][a-z\\-]*)"', body))
+    _assert(whitelisted, "consoleMode 白名单是空的")
+
+    missing = sorted(f for f in flags if f not in whitelisted)
+    _assert(not missing,
+            f"launcher.cs 判定到的开关 {missing} 不在 consoleMode 白名单里，"
+            f"这些参数从 GpuCore.exe 跑会静默无输出。白名单现有：{sorted(whitelisted)}")
+
+    # 反向：app.py 说认识的开关，启动器也必须认识（否则从 exe 调就是静默黑洞）
+    app_src = (root / "gpucore" / "app.py").read_text(encoding="utf-8", errors="replace")
+    km = re.search(r"known\s*=\s*\{([^}]*)\}", app_src)
+    _assert(km, "app.py 里找不到 known 集合")
+    known = set(re.findall(r'"(--[a-z][a-z\-]*)"', km.group(1)))
+    _assert(known, "app.py 的 known 集合解析为空")
+    not_in_launcher = sorted(known - flags)
+    _assert(not not_in_launcher,
+            f"app.py 认识但 launcher.cs 没判定到的开关：{not_in_launcher} —— "
+            f"这些参数从 GpuCore.exe 调用会静默无输出")
+
+
 @check("cli/version-and-help")
 def test_cli() -> None:
     py = sys.executable

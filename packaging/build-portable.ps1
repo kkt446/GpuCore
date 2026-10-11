@@ -58,6 +58,18 @@ foreach ($need in 'pythonw.exe', 'Lib', 'DLLs', 'tcl') {
 Ok "gpucore 包: $PackageDir"
 Ok "Python 运行时: $RuntimeDir"
 
+# -OutDir 传绝对路径时 Join-Path 会把它当子路径拼，拼出 "C:\...\GpuCore\C:\...\dist"
+# 这种非法路径（New-Item 报「不支持给定路径的格式」）。所以这里统一换算成相对项目根的路径。
+if ([System.IO.Path]::IsPathRooted($OutDir)) {
+    $fullDist = [System.IO.Path]::GetFullPath($OutDir)
+    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
+    if ($fullDist.StartsWith($fullRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $OutDir = $fullDist.Substring($fullRoot.Length).TrimStart('\')
+    } else {
+        Die "-OutDir 必须落在项目根目录内（或传相对路径）：$OutDir"
+    }
+}
+
 $dist = Join-Path $Root $OutDir
 $name = "GpuCore-$Version-portable"
 $target = Join-Path $dist $name

@@ -53,22 +53,11 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+      # 注意：这里**不要**用 generate_release_notes，也不要用 body 覆盖，
+      # 因为这个 workflow 常常是补挂到一条已经手工建好的 Release 上的
+      # （先发 Release，再推 tag 触发打包）。带上 body 会把人写好的发布说明冲掉。
       - name: 挂到 Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
-          generate_release_notes: true
-          body: |
-            ## 免安装版（推荐）
-
-            下载下面的 `GpuCore-*-portable.zip`，解压到任意目录，双击 `GpuCore.exe`。
-            **不需要安装 Python**，不需要管理员权限，删掉文件夹即卸载。
-
-            首次使用前建议跑一下自检，把输出发到 issue 里：
-
-            ```
-            GpuCore.exe --check
-            ```
-
-            硬件切换目前只在华硕机型上可用；其他机型会自动把切换按钮置灰，监视功能照常。

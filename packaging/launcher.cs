@@ -80,12 +80,16 @@ static class GpuCoreLauncher
         string mainPy = Path.Combine(root, "main.py");
 
         // 先判断是不是"要看输出"的模式：这类模式必须保留控制台。
+        // 【新增参数时务必加到这里】漏了不会报错，只会静默什么都不打印：
+        // 走的是 pythonw.exe + CreateNoWindow，stdout 是无效句柄，print 全丢。
+        // --report 就这么漏过一次。
         bool consoleMode = false;
         foreach (string a in args)
         {
             string s = a.ToLowerInvariant();
             if (s == "--check" || s == "--selftest" || s == "--version" || s == "-v"
-                || s == "--help" || s == "-h" || s == "--console" || s == "--check-gui")
+                || s == "--help" || s == "-h" || s == "--console" || s == "--check-gui"
+                || s == "--report")
             {
                 consoleMode = true;
                 break;
