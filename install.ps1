@@ -28,14 +28,44 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$AppName     = 'GpuCore'
-$AppNameCn   = '双芯'
-$LegacyNames = @('GPUSwitch')
 $SourceDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$InstallDir  = Join-Path $env:LOCALAPPDATA $AppName
-$AppDir      = Join-Path $InstallDir 'app'
-$LauncherCmd = Join-Path $InstallDir "$AppName.cmd"
-$ConsoleCmd  = Join-Path $InstallDir "$AppName-console.cmd"
+
+# --------------------------------------------------------------------------
+# 0. 从一个来源读品牌信息
+#    gpucore/branding.py 是唯一权威。以前这里把 GpuCore / 双芯 各硬写了一遍，
+#    哪天改了 branding.py 的 APP_NAME 而忘了改这里，安装目录和程序读配置的
+#    目录就会分叉（装到 A、去 B 找 config.json）。所以现读，不再抄。
+# --------------------------------------------------------------------------
+function Read-Branding {
+    param([string]$Root)
+    $path = Join-Path $Root 'gpucore\branding.py'
+    if (-not (Test-Path $path)) { throw "找不到 $path，install.ps1 必须和 gpucore\ 放在一起" }
+    $text = Get-Content -Path $path -Raw -Encoding UTF8
+    $get = {
+        param([string]$Key)
+        $m = [regex]::Match($text, "(?m)^\s*$Key\s*=\s*[`"']([^`"']+)[`"']")
+        if (-not $m.Success) { throw "branding.py 里读不到 $Key" }
+        $m.Groups[1].Value
+    }
+    [pscustomobject]@{
+        Name     = (& $get 'APP_NAME')
+        NameCn   = (& $get 'APP_NAME_CN')
+        Version  = (& $get 'APP_VERSION')
+        DirName  = (& $get 'APP_DIR_NAME')
+        Tagline  = (& $get 'APP_TAGLINE')
+        Repo     = (& $get 'APP_REPO')
+    }
+}
+
+$B            = Read-Branding -Root $SourceDir
+$AppName      = $B.Name
+$AppNameCn    = $B.NameCn
+$AppVersion   = $B.Version
+$LegacyNames  = @('GPUSwitch')
+$InstallDir   = Join-Path $env:LOCALAPPDATA $B.DirName
+$AppDir       = Join-Path $InstallDir 'app'
+$LauncherCmd  = Join-Path $InstallDir "$AppName.cmd"
+$ConsoleCmd   = Join-Path $InstallDir "$AppName-console.cmd"
 
 function Line($t)  { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 function Ok($t)    { Write-Host "  [OK] $t" -ForegroundColor Green }
@@ -92,7 +122,7 @@ if ($Uninstall) {
 }
 
 Write-Host ""
-Write-Host "  $AppName ($AppNameCn) - 安装" -ForegroundColor White
+Write-Host "  $AppName ($AppNameCn) $AppVersion - 安装" -ForegroundColor White
 Write-Host "  ----------------------------------------" -ForegroundColor DarkGray
 
 # --------------------------------------------------------------------------
@@ -207,7 +237,7 @@ if (-not $NoShortcut) {
             $lnk.TargetPath       = $LauncherCmd
             $lnk.WorkingDirectory = $InstallDir
             $lnk.IconLocation     = "$env:SystemRoot\System32\shell32.dll,13"
-            $lnk.Description      = "$AppName - 显卡热切换 + 资源监视"
+            $lnk.Description      = "$AppName - $($B.Tagline)"
             $lnk.Save()
             Ok "快捷方式: $lnkPath"
         }

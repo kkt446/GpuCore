@@ -81,7 +81,29 @@ def test_bundle_dir() -> None:
     _assert((b / "gpucore" / "app.py").exists(), f"bundle_dir 里找不到 gpucore/app.py: {b}")
 
 
-@check("branding/portable-mode")
+@check("branding/install-ps1-single-source")
+def test_install_ps1_reads_branding() -> None:
+    """install.ps1 必须从 branding.py 现读品牌名，不能自己再抄一份。
+
+    它拿这个值算安装目录 %LOCALAPPDATA%\\<APP_DIR_NAME>。如果它硬写 'GpuCore'
+    而 branding.py 已经改名，安装目录和程序读配置的目录就会分叉 —— 装到 A 目录、
+    程序去 B 目录找 config.json，用户看到的是"配置莫名其妙丢了"。
+    """
+    p = branding.bundle_dir() / "install.ps1"
+    _assert(p.exists(), f"找不到 {p}")
+    src = p.read_text(encoding="utf-8")
+
+    _assert("Read-Branding" in src, "install.ps1 没有从 branding.py 读品牌信息")
+
+    # 旧写法：$AppName = 'GpuCore' / $AppNameCn = '双芯'
+    bad = re.search(r"\$(?:AppName|AppNameCn|InstallDir)\s*=\s*['\"]", src)
+    _assert(not bad, f"install.ps1 又把品牌名硬写回去了: {bad.group(0) if bad else ''}")
+
+    for key in ("APP_NAME", "APP_NAME_CN", "APP_DIR_NAME"):
+        _assert(key in src, f"install.ps1 没读 {key}")
+
+
+
 def test_portable_mode() -> None:
     # 源码树里没有 GpuCore.exe / PORTABLE，应当判为非便携
     _assert(branding.portable_mode() is False, "源码树被误判为便携包")
