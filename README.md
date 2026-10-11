@@ -131,6 +131,21 @@ GpuCore.exe --check              # 免安装版
 
 ---
 
+## 换台华硕机器先跑机型报告
+
+自检只告诉你「成不成」，机型报告告诉你「这台机器到底有哪些设备号」——这是把新机型补进兼容表所需要的全部信息。
+
+```powershell
+python -m gpucore --report        # 源码方式
+GpuCore.exe --report              # 免安装版
+```
+
+输出是一段 markdown：机器型号 / BIOS / 显卡清单 / 探测到的设备号 / 传感器，最后附上**两个设备号段的完整扫描结果**（`0x00090000` 段和 `0x00120000` 段里凡是读得到非零的号，就是这台机器真实存在的设备）。
+
+跑完把**整段输出**贴到 issue 里即可。那段全扫结果是补全兼容性的唯一凭据，请勿删减。
+
+---
+
 ## 兼容性
 
 | 机型 | 情况 |
@@ -143,7 +158,7 @@ GpuCore.exe --check              # 免安装版
 程序**不会盲写**：探测不到固件通道就把按钮置灰，而不是试着写一个可能意义不明的设备号。
 
 > 目前在 **ASUS TX Gaming FX608LM**（Core Ultra 7 255HX + RTX 5060 Laptop）上实测通过。
-> 其他机型的实测反馈欢迎提 issue —— 跑一次 `GpuCore.exe --check` 把输出发出来即可。
+> 其他机型的实测反馈欢迎提 issue —— 跑一次 `GpuCore.exe --report` 把整段输出发出来即可（见上一节）。
 
 ---
 
@@ -193,8 +208,8 @@ gpucore/                主程序
 ├── app.py              界面 + 采集 + ACPI
 ├── hardware.py         机型自适应层（不同华硕机型设备号不同，这里探测）
 ├── branding.py         名字/版本/路径，改名只改这里
-├── selftest.py         --check 自检
-└── tests/              自测套件（31 项，默认不碰硬件）
+├── selftest.py         --check 自检 / --report 机型报告
+└── tests/              自测套件（只读，默认不碰硬件）
 packaging/              免安装包：启动器源码 + 打包脚本
 install.ps1             一键安装 / 卸载
 assets/                 截图
@@ -206,7 +221,7 @@ archive/                早期实现，仅作参考，不参与运行
 ### 自己跑自测
 
 ```powershell
-python -m gpucore.tests.test_gpucore             # 31 项，只读，不碰硬件
+python -m gpucore.tests.test_gpucore             # 全部用例，只读，不碰硬件
 python -m gpucore.tests.test_gpucore -k hotkey   # 只跑某一块
 python -m gpucore.tests.test_gpucore --write     # 额外跑真的会切显卡的用例
 ```

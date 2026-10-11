@@ -198,8 +198,8 @@ winexe 进程自己没有控制台，被它拉起的 python 子进程继承到�
 |---|---|
 | `gpucore/app.py` | 界面、采集、切换流程、安全闸 |
 | `gpucore/hardware.py` | 机型自适应层：ACPI 读写 + 设备号候选探测 |
-| `gpucore/selftest.py` | 逐设备号自检（`python -m gpucore --check`） |
-| `gpucore/tests/test_gpucore.py` | 31 项自测，默认绝不写 ACPI |
+| `gpucore/selftest.py` | 逐设备号自检（`--check`）+ 机型报告（`--report`） |
+| `gpucore/tests/test_gpucore.py` | 自测套件，默认绝不写 ACPI |
 | `packaging/build-portable.ps1` | 免安装包构建（含两道自动关卡） |
 | `packaging/launcher.cs` | `GpuCore.exe` 启动器源码（控制台子系统） |
 | `tools/check-ps1.ps1` | 体检所有 `.ps1` 的 BOM 与语法 |

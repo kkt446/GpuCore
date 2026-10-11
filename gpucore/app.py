@@ -1839,7 +1839,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception:
             pass
 
-    known = {"--version", "-V", "--check", "--selftest", "--help", "-h", "--console"}
+    known = {"--version", "-V", "--check", "--selftest", "--report", "--help", "-h", "--console"}
     unknown = [a for a in argv if a.startswith("-") and a not in known]
     if unknown:
         print(f"未知参数: {' '.join(unknown)}（用 --help 看用法）", file=sys.stderr)
@@ -1854,12 +1854,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         return print_report(run_self_test())
 
+    if "--report" in argv:
+        from .selftest import print_machine_report
+
+        return print_machine_report()
+
     if "--help" in argv or "-h" in argv:
         print(f"""{APP_NAME} ({APP_NAME_CN}) {APP_VERSION} —— {APP_TAGLINE}
 
 用法:
   python -m gpucore            启动面板（常驻后台，按热键呼出）
   python -m gpucore --check    自检：检查这台机器能不能用、缺什么
+  python -m gpucore --report   机型报告：贴到 issue 里，用来补全其他华硕机型的设备号
   python -m gpucore --version  看版本
 """)
         return 0

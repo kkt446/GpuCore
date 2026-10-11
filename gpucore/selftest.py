@@ -212,3 +212,163 @@ def print_report(rep: Report) -> int:
     print("=" * 66)
     print()
     return 1 if rep.failed else 0
+
+
+# ---------------------------------------------------------------------------
+# 机型反馈报告
+#
+# 「换一台华硕就不一定能用」是这类工具的根本短板：设备号是按产品线分的，
+# 我手上只有一台 TX Gaming FX608LM。要让别人帮我补全，就得让他们能一键产出一份
+# **我能直接拿去改代码**的东西 —— 所以这份报告的重点不是"能不能用"，
+# 而是「这台机器的 ATKACPI 上到底有哪些设备号是真的」。
+# ---------------------------------------------------------------------------
+
+def _wmi(query: str, field: str) -> str:
+    """取一个 WMI 字段，多个实例时用 ` | ` 接成一行。
+
+    Win32_VideoController 这类查询会返回多条记录，PowerShell 会一行一条地打出来，
+    直接嵌进报告里会把 markdown 的列表结构撑破 —— 所以这里统一压平。
+    """
+    try:
+        import subprocess
+        cp = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"(Get-CimInstance {query}).{field}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=25,
+        )
+        lines = [x.strip() for x in (cp.stdout or "").splitlines() if x.strip()]
+        return " | ".join(lines)
+    except Exception:
+        return ""
+
+
+def _scan_acpi(acpi, base: int, span: int = 0x20) -> List[Tuple[int, int]]:
+    """扫一段设备号，返回所有「读得到非零 raw」的号。
+
+    ATKACPI 的行为：**不支持的号返回 0，支持的号一定回非零**
+    （见 docs/asus-gpu-switching.md）。所以非零就是"这个号在这台机器上存在"。
+    反过来，"值为 0"既可能是没有这个号、也可能是这个号的值恰好是 0 ——
+    所以报告里只列非零的，不做反向断言。
+    """
+    hits: List[Tuple[int, int]] = []
+    for off in range(span):
+        dev = base + off
+        try:
+            raw = acpi.get_raw(dev)
+        except Exception:
+            continue
+        if raw:  # None（不支持）和 0 都跳过
+            hits.append((dev, raw))
+    return hits
+
+
+def build_machine_report() -> str:
+    """产出一份可以直接贴到 issue 里的纯文本报告。"""
+    from .app import AtkAcpi
+    from .hardware import ECO_CANDIDATES, MUX_CANDIDATES, SENSOR_DEVICES, probe_devices
+
+    L: List[str] = []
+    L.append(f"# {branding.APP_NAME} 机型报告 v{branding.APP_VERSION}")
+    L.append("")
+
+    L.append("## 机器")
+    L.append("")
+    L.append(f"- 厂商型号   : {_wmi('Win32_ComputerSystem', 'Manufacturer')} / "
+             f"{_wmi('Win32_ComputerSystem', 'Model')}")
+    L.append(f"- 系统型号   : {_wmi('Win32_ComputerSystemProduct', 'Name')}")
+    L.append(f"- BIOS       : {_wmi('Win32_BIOS', 'SMBIOSBIOSVersion')}")
+    L.append(f"- 主板       : {_wmi('Win32_BaseBoard', 'Product')}")
+    L.append(f"- 操作系统   : {_wmi('Win32_OperatingSystem', 'Caption')} "
+             f"{_wmi('Win32_OperatingSystem', 'Version')}")
+    L.append("")
+
+    L.append("## 显卡")
+    L.append("")
+    # 用 WMI 而不是 DXGI 枚举：这份报告是在**别人的机器**上跑的，
+    # WMI 不依赖我们那套手写的 ctypes COM 虚表，出错概率低得多。
+    vcs = _wmi("Win32_VideoController", "Name")
+    if vcs:
+        for name in [x.strip() for x in vcs.split(" | ") if x.strip()]:
+            L.append(f"- {name}")
+    else:
+        L.append("- WMI 没报出显卡")
+    L.append(f"- 驱动版本: {_wmi('Win32_VideoController', 'DriverVersion') or '读不到'}")
+    L.append(f"- 设备 ID : {_wmi('Win32_VideoController', 'PNPDeviceID') or '读不到'}")
+    try:
+        from .app import nvidia_available
+        L.append(f"- nvidia-smi 可读: **{nvidia_available()}**"
+                 "（False = 独显正断电，属正常省电状态）")
+    except Exception as exc:
+        L.append(f"- nvidia-smi 探测失败: {exc}")
+    L.append("")
+
+    acpi = AtkAcpi()
+    if not acpi.open():
+        L.append("## ATKACPI")
+        L.append("")
+        L.append("- **打不开 `\\\\.\\ATKACPI`** —— 这台机器不是华硕，或没装 ASUS 驱动。")
+        L.append("  装一次 G-Helper 或 MyASUS 会带上这个驱动，然后重跑。")
+        return "\n".join(L)
+
+    dm = probe_devices(acpi)
+
+    L.append("## 机型自适应结果")
+    L.append("")
+    L.append(f"- 独显供电切换 : {('0x%08X' % dm.eco) if dm.can_eco else '不可用'}")
+    L.append(f"- 显示通路切换 : {('0x%08X' % dm.mux) if dm.can_mux else '不可用'}")
+    for note in dm.notes:
+        L.append(f"- 备注         : {note}")
+    L.append("")
+
+    L.append("## 候选设备号探测")
+    L.append("")
+    L.append("| 用途 | 设备号 | 产品线 | 结果 | raw |")
+    L.append("|---|---|---|---|---|")
+    for label, cands in (("独显供电", ECO_CANDIDATES), ("显示通路", MUX_CANDIDATES)):
+        for dev, line in cands:
+            raw = acpi.get_raw(dev)
+            if raw is None:
+                L.append(f"| {label} | `0x{dev:08X}` | {line} | 不支持 | - |")
+            else:
+                L.append(f"| {label} | `0x{dev:08X}` | {line} | **支持** | `0x{raw:X}` |")
+    L.append("")
+
+    L.append("## 传感器")
+    L.append("")
+    for key, dev in dm.sensors.items():
+        try:
+            val = acpi.get(dev)
+        except Exception:
+            val = "读不到"
+        L.append(f"- 0x{dev:08X} = {val}   （{SENSOR_DEVICES[key][1]}）")
+    L.append("")
+
+    # 这一段是补设备号的关键：把这两段扫全，我就能看出这台机器用的是哪套号
+    L.append("## 设备号全扫（关键，请勿删）")
+    L.append("")
+    L.append("ATKACPI 上「读得到非零」的号就是这台机器真正存在的设备。")
+    L.append("")
+    for label, base, span in (("0x00090000 段（显卡/显示相关）", 0x00090000, 0x40),
+                              ("0x00120000 段（传感器相关）", 0x00120000, 0x80)):
+        L.append(f"### {label}")
+        L.append("")
+        hits = _scan_acpi(acpi, base, span)
+        if not hits:
+            L.append("（一个都没读到）")
+        else:
+            for dev, raw in hits:
+                L.append(f"- `0x{dev:08X}` = `0x{raw:X}`")
+        L.append("")
+
+    L.append("---")
+    L.append("")
+    L.append("把上面全部内容贴到 https://github.com/KKT446/GpuCore/issues 即可。")
+    return "\n".join(L)
+
+
+def print_machine_report() -> int:
+    print()
+    print(build_machine_report())
+    print()
+    return 0

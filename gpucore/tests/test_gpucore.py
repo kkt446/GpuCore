@@ -489,6 +489,32 @@ def test_cli() -> None:
     _assert(cp.returncode == 0, f"--check 未通过：\n{cp.stdout[-1500:]}\n{cp.stderr[-500:]}")
 
 
+@check("cli/report")
+def test_cli_report() -> None:
+    """--report 是给别的华硕机型owner用的，必须在任何机器上都能跑出一份完整报告。
+
+    关键在于「ATKACPI 打不开时也不能崩」：非华硕机器、或没装 ASUS 驱动的机器上，
+    这份报告正是用户拿来提问的那份东西，崩了就等于没有反馈通道。
+    """
+    cp = subprocess.run([sys.executable, "-m", "gpucore", "--report"],
+                        capture_output=True, encoding="utf-8", errors="replace",
+                        timeout=300, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    out = cp.stdout
+    _assert(cp.returncode == 0, f"--report 退出码 {cp.returncode}:\n{cp.stderr[-500:]}")
+    for section in ("## 机器", "## 显卡", "## 机型自适应结果", "## 候选设备号探测"):
+        _assert(section in out, f"报告缺少「{section}」段:\n{out[:600]}")
+
+    # 候选表必须两种结果都在：支持的报 raw，不支持的也要列出来。
+    # 只列命中的号，看的人就不知道「哪些候选被试过但没中」了。
+    _assert("支持" in out, "候选表里一个命中的候选都没有（本机至少应命中一个）")
+    _assert("不支持" in out or "打不开" in out, "候选表没有报出未命中的候选")
+
+    # 打不开通道时给出明确的下一步，而不是只报错
+    if "打不开" in out:
+        _assert("G-Helper" in out or "MyASUS" in out,
+                "ATKACPI 打不开时没有告诉用户怎么补驱动")
+
+
 @check("cli/unknown-arg")
 def test_cli_unknown() -> None:
     cp = subprocess.run([sys.executable, "-m", "gpucore", "--definitely-not-a-flag"],
