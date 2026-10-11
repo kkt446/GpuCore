@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.local/
+*.log
+install.log
+
+# 打包产物：dist/ 里是 159 MB 的运行时 + 54 MB 的 zip，
+# 绝对不能提交进仓库（历史上传大文件会让 clone 变得很痛苦）。
+# 要发就挂 Release（.github/workflows/build-portable.yml 会自动做）。
+dist/
+_pruned/
+*.zip
+build/
