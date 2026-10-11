@@ -1,0 +1,10 @@
+# 运行本项目**不需要**任何第三方依赖：
+#   GUI 用 tkinter（Python 自带）
+#   GPU 枚举用 DXGI（ctypes 调 dxgi.dll）
+#   占用采集用 Windows 性能计数器 PDH（ctypes 调 pdh.dll）
+#   全局快捷键用 user32 的 RegisterHotKey
+#
+# 下面三个都是可选增强，装不上也不影响使用（install.ps1 会自动尝试安装）：
+psutil>=5.9      # 额外的系统指标（CPU 频率、交换分区等）
+pystray>=0.19    # 托盘图标与右键菜单
+Pillow>=9.0      # 绘制托盘图标
