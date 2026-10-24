@@ -1,10 +1,3 @@
-"""华硕专用：本机接口自检。
-
-把这个模块单独拿出来，是因为"读不到"和"读了但值是 0"必须能区分开——
-前者是接口问题，后者是状态问题，混在一起就会像之前那样"看起来是错的"。
-
-每个检查项都返回 (名称, 是否可用, 读到的值, 说明)，可以直接打到界面上。
-"""
 
 from __future__ import annotations
 
@@ -19,16 +12,12 @@ from .paths import is_windows, run_capture
 
 logger = log.get(__name__)
 
-# ---------------------------------------------------------------------------
-# 设备号表（来自 G-Helper 的 AsusACPI.cs，本机实测确认可用性）
-# ---------------------------------------------------------------------------
 
 ATKACPI_PATH = r"\\.\ATKACPI"
 CONTROL_CODE = 0x0022240C
 DSTS = 0x53545344
 DEVS = 0x53564544
 
-#: 设备号 -> (显示名, 单位/含义)
 DEVICES: Dict[int, Tuple[str, str]] = {
     0x00090020: ("GPUEco", "独显供电：0=通电可用 1=断电省电"),
     0x00090016: ("GPUMux", "显示通路：0=集显 1=标准混合 2=独显直连"),
@@ -48,8 +37,8 @@ DEVICES: Dict[int, Tuple[str, str]] = {
     0x000600C4: ("VRAM_MEM", "显存分配选项"),
 }
 
-ECO_ON = 0    # 独显通电
-ECO_OFF = 1   # 独显断电
+ECO_ON = 0
+ECO_OFF = 1
 
 MUX_IGPU = 0
 MUX_STANDARD = 1
@@ -57,21 +46,7 @@ MUX_ULTIMATE = 2
 
 UNSUPPORTED = -65536
 
-
-# ---------------------------------------------------------------------------
-# 底层：ATKACPI 读写
-# ---------------------------------------------------------------------------
-
-
 class AtkAcpi:
-    """\\\\.\\ATKACPI 的最小封装。
-
-    句柄缓存 + 可重连，避免每次读都开关设备。
-
-    注意：这里必须用 RLock。公开方法会加锁，而 _call 在句柄缺失时也会去
-    open()，open() 自己又加锁——用普通 Lock 会直接死锁（曾经真的死锁过，
-    表现为界面卡在"读取中…"）。
-    """
 
     def __init__(self) -> None:
         import threading
@@ -152,10 +127,6 @@ class AtkAcpi:
         return self._call(DSTS, args, out_size)
 
     def get(self, device_id: int) -> Optional[int]:
-        """返回设备值；None 表示不支持或读取失败。
-
-        ATKACPI 用 raw - 0x10000 表示数值，raw == 0 视为无效。
-        """
         out = self.get_raw(device_id)
         if not out or len(out) < 4:
             return None
@@ -165,7 +136,6 @@ class AtkAcpi:
         return raw - 0x10000
 
     def set(self, device_id: int, value: int) -> Optional[int]:
-        """写入；返回固件 result（1 = 成功），None 表示调用失败。"""
         args = device_id.to_bytes(4, "little") + (value & 0xFFFFFFFF).to_bytes(4, "little")
         out = self._call(DEVS, args)
         if not out or len(out) < 4:
@@ -177,17 +147,6 @@ _present_cache: Dict[str, object] = {"value": None, "at": 0.0}
 
 
 def dgpu_device_present() -> Optional[bool]:
-    """独显这个设备此刻是否处于"正常工作"状态（不碰 NVIDIA 驱动）。
-
-    为什么不用 nvidia-smi：**调用 nvidia-smi 会初始化 NVIDIA 驱动，
-    可能把刚断电的独显又唤醒**，观测行为本身改变了被观测状态。
-
-    用 SetupAPI 读设备的问题码（CONFIGRET / problem code）：
-    设备被断电停用时，驱动会把它标记为有问题（CM_PROB_*），
-    这是纯查询，不加载驱动。
-
-    返回 True=正常、False=被停用/有问题、None=查不到。
-    """
     if not is_windows():
         return None
     try:
@@ -255,7 +214,6 @@ def dgpu_device_present() -> Optional[bool]:
             if cfgmgr32.CM_Get_DevNode_Status(
                 ctypes.byref(status), ctypes.byref(problem), info.DevInst, 0
             ) == 0:
-                # problem != 0 表示设备有问题（被停用/断电）
                 return problem.value == 0
             return True
         if not found:
@@ -269,15 +227,6 @@ def dgpu_device_present() -> Optional[bool]:
 
 
 def nvidia_present(cache_seconds: float = 10.0) -> Optional[bool]:
-    """独显此刻是否可用。
-
-    重要实测结论（FX608LM / BIOS 315 / 已卸载奥创、只留 G-Helper）：
-    **任何探测独显的动作都会把它唤醒** —— nvidia-smi 会加载驱动，
-    SetupAPI 查询设备问题码同样会触发枚举。所以：
-      * 这个函数的默认缓存拉到 10 秒，尽量少打扰
-      * 只有用户主动点"重新检测"时才用 cache_seconds=0 强刷
-      * 不要拿它做高频轮询，否则会变成"自己把独显一直打开"
-    """
     if not is_windows():
         return None
 
@@ -287,7 +236,6 @@ def nvidia_present(cache_seconds: float = 10.0) -> Optional[bool]:
         cached = _present_cache.get("value")
         return cached if cached is None else bool(cached)
 
-    # 先用不加载驱动的 SetupAPI 查；它不敏感时再退回驱动探测
     present = dgpu_device_present()
     if present is None or present is False:
         try:
@@ -296,7 +244,6 @@ def nvidia_present(cache_seconds: float = 10.0) -> Optional[bool]:
             )
             text = ((out.stdout or "") + (out.stderr or "")).lower()
             by_driver = bool(out.returncode == 0 and "nvidia" in text)
-            # 两者不一致时以"能不能真的用"为准
             present = by_driver if present is None else (present and by_driver)
         except Exception:
             if present is None:
@@ -313,11 +260,6 @@ def invalidate_presence_cache() -> None:
 
 
 def asus_services_state() -> Dict[str, str]:
-    """华硕相关服务的运行状态。
-
-    AsusAppService 被禁用时，ACPI 写入虽然返回成功、也确实会短暂断电，
-    但状态难以维持；诊断里要把它暴露出来。
-    """
     result: Dict[str, str] = {}
     if not is_windows():
         return result
@@ -337,12 +279,6 @@ def asus_services_state() -> Dict[str, str]:
         logger.debug("查询华硕服务失败: %s", exc)
     return result
 
-
-# ---------------------------------------------------------------------------
-# 自检结果
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class Check:
     name: str
@@ -361,7 +297,6 @@ class SelfTestReport:
     eco: Optional[int] = None
     mux: Optional[int] = None
     model: str = ""
-    #: 独显当前是否在系统里可用（硬件级判据，比 GPUEco 寄存器可靠）
     dgpu_present: Optional[bool] = None
 
     @property
@@ -390,7 +325,6 @@ class SelfTestReport:
 
 
 def run_self_test() -> SelfTestReport:
-    """逐项自检本机的华硕接口，返回可读报告。"""
     report = SelfTestReport()
 
     if not is_windows():
@@ -414,7 +348,6 @@ def run_self_test() -> SelfTestReport:
         return report
     report.add("\\\\.\\ATKACPI", True, "已连接")
 
-    # 逐个设备号读值
     supported = 0
     for device_id, (name, meaning) in DEVICES.items():
         value = acpi.get(device_id)
@@ -428,7 +361,6 @@ def run_self_test() -> SelfTestReport:
     report.mux = acpi.get(0x00090016)
     report.add("支持的设备号", supported > 0, f"{supported}/{len(DEVICES)}")
 
-    # 真正的状态判据：独显在不在
     report.dgpu_present = nvidia_present()
     report.add(
         "独显是否在系统里（权威判据）",
@@ -437,7 +369,6 @@ def run_self_test() -> SelfTestReport:
         "用 nvidia-smi 能否读到判断；GPUEco 寄存器回读在本机型不可信",
     )
 
-    # 华硕服务状态：被禁用时 ACPI 写入难以维持
     services = asus_services_state()
     if services:
         running = [n for n, s in services.items() if s.lower() == "running"]
@@ -457,7 +388,6 @@ def run_self_test() -> SelfTestReport:
                 "需要以管理员运行并启用该服务",
             )
 
-    # 写入通路自检：把当前值写回去，验证固件接受（不改变状态）
     if report.eco is not None:
         result = acpi.set(0x00090020, report.eco)
         report.add(
@@ -469,12 +399,6 @@ def run_self_test() -> SelfTestReport:
 
     acpi.close()
     return report
-
-
-# ---------------------------------------------------------------------------
-# 模式定义（华硕语义，和 G-Helper 的三档对齐）
-# ---------------------------------------------------------------------------
-
 
 @dataclass
 class AsusMode:
@@ -494,7 +418,6 @@ class AsusMode:
         return True
 
 
-#: 三个官方模式 + 一个省电模式，顺序按 G-Helper 的习惯
 ASUS_MODES: List[AsusMode] = [
     AsusMode(
         "eco", "集显模式",
@@ -522,12 +445,6 @@ def find_mode(mode_id: str) -> Optional[AsusMode]:
 
 
 def detect_current_mode(eco: Optional[int], mux: Optional[int]) -> Optional[AsusMode]:
-    """按 G-Helper 的判定顺序推断当前模式。
-
-    注意 GPUEco 寄存器的读值在本机型上不可靠（写 1 后读回仍是 0，
-    但独显确实断电了）。所以优先用**独显在不在**来判断，
-    eco 寄存器只在能明确读出 1 时才作为"集显模式"的依据。
-    """
     present = nvidia_present()
     if present is False:
         return find_mode("eco")
@@ -535,7 +452,6 @@ def detect_current_mode(eco: Optional[int], mux: Optional[int]) -> Optional[Asus
         if mux == MUX_ULTIMATE:
             return find_mode("ultimate")
         return find_mode("standard")
-    # 拿不到硬件信号时退回寄存器语义
     if eco is None:
         return None
     if eco == ECO_OFF:

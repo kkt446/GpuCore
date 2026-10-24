@@ -1,14 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    Real-hardware drift test.
-
-    Plays the role of Armoury Crate / G-Helper: flips the dGPU power state via
-    the ASUS ACPI interface, then watches whether the running GPUSwitch guard
-    notices and restores the locked state.
-
-    ASUS device ids:
-        GPUEco 0x00090020 : 0 = dGPU on   1 = dGPU off
-#>
+﻿
 
 [CmdletBinding()]
 param(

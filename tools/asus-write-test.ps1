@@ -1,15 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    ASUS write-permission test - VALUE PRESERVING.
-
-    Writes the *same* value that is already active back to the device, which
-    proves whether we have write access without changing any state. If the
-    read value differs from what we wrote, it restores the original.
-
-    Device IDs (G-Helper AsusACPI.cs):
-        GPUEcoROG 0x00090020 : 0 = dGPU on (Standard)  1 = dGPU off (Eco)
-        GPUMuxROG 0x00090016 : 0 = iGPU  1 = Standard   2 = Ultimate
-#>
+﻿
 
 [CmdletBinding()]
 param()

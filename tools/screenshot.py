@@ -1,7 +1,3 @@
-"""开发辅助：把面板渲染成 PNG，便于在没有人工点按的情况下检查界面。
-
-用法:  python tools/screenshot.py [输出路径]
-"""
 
 from __future__ import annotations
 
@@ -20,7 +16,6 @@ from gpuswitch.ui import GpuPanel, prepare_dpi
 
 
 def hwnd_of(widget) -> int:
-    """取顶层窗口句柄。"""
     widget.update_idletasks()
     user32 = ctypes.WinDLL("user32")
     hwnd = user32.GetParent(widget.winfo_id())
@@ -28,8 +23,7 @@ def hwnd_of(widget) -> int:
 
 
 def capture(hwnd: int, path: Path) -> bool:
-    """用 PrintWindow 抓取窗口位图并保存为 PNG。"""
-    import tkinter as tk  # noqa: F401
+    import tkinter as tk
 
     user32 = ctypes.WinDLL("user32")
     gdi32 = ctypes.WinDLL("gdi32")
@@ -46,7 +40,6 @@ def capture(hwnd: int, path: Path) -> bool:
     bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
     gdi32.SelectObject(memory_dc, bitmap)
 
-    # PW_RENDERFULLCONTENT = 2，能抓到分层/合成内容
     ok = user32.PrintWindow(hwnd, memory_dc, 2)
 
     class BITMAPINFOHEADER(ctypes.Structure):
@@ -61,10 +54,10 @@ def capture(hwnd: int, path: Path) -> bool:
     header = BITMAPINFOHEADER()
     header.biSize = ctypes.sizeof(BITMAPINFOHEADER)
     header.biWidth = width
-    header.biHeight = -height  # 自顶向下
+    header.biHeight = -height
     header.biPlanes = 1
     header.biBitCount = 32
-    header.biCompression = 0  # BI_RGB
+    header.biCompression = 0
 
     buffer_size = width * height * 4
     buffer = ctypes.create_string_buffer(buffer_size)
@@ -97,7 +90,6 @@ def main() -> int:
     adapters = enumerate_adapters(use_cache=False)
     root.deiconify()
 
-    # 有硬件通道时，顺便把锁定卡片渲染成"已锁定"的样子，方便视觉验收
     from gpuswitch.hardware import detect_hardware
     from gpuswitch.lock import GpuLock, LockRecord
 
@@ -126,7 +118,6 @@ def main() -> int:
     collector.start()
     panel.show()
 
-    # 等采集器出数据
     for _ in range(12):
         root.update()
         time.sleep(0.25)

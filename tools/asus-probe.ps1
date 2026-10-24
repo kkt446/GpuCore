@@ -1,18 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    ASUS hardware probe - READ ONLY.
-
-    Confirms whether we can read ASUS GPU state through
-      1. WMI  root\wmi : AsusAtkWmi_WMNB (DEVS / DSTS methods)
-      2. raw  \\.\ATKACPI DeviceIoControl  (what G-Helper uses)
-    and reports the current dGPU (Eco) / MUX state.
-
-    This script performs NO writes and changes nothing.
-
-    Device IDs (from G-Helper's AsusACPI.cs):
-        GPUEcoROG 0x00090020 : 0 = dGPU on (Standard)   1 = dGPU off (Eco)
-        GPUMuxROG 0x00090016 : 0 = iGPU   1 = Standard   2 = Ultimate (dGPU direct)
-#>
+﻿
 
 [CmdletBinding()]
 param()
@@ -29,7 +15,6 @@ $GPUMux = 0x00090016
 
 Line "1. WMI: root\wmi AsusAtkWmi_WMNB"
 
-# Make sure the service that backs WMI is up (read-only probe, no system change)
 foreach ($svc in 'Winmgmt') {
     $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
     if ($s) { Info "$svc : $($s.Status)" }

@@ -1,19 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    Switch-feature verification (run OUTSIDE the restricted sandbox).
-
-    ASCII-only on purpose: Windows PowerShell 5.1 reads .ps1 files as ANSI/GBK
-    unless they carry a UTF-8 BOM, which corrupts non-ASCII literals and can
-    break parsing outright.
-
-    It performs three checks and RESTORES the original state afterwards:
-      1. Read current global GPU preference
-      2. Write "high performance", read it back, then restore
-      3. Exercise the app's own switcher code path
-
-    Usage:
-        powershell -ExecutionPolicy Bypass -File tools\verify-switch.ps1
-#>
+﻿
 
 [CmdletBinding()]
 param(

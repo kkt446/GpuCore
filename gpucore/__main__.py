@@ -1,4 +1,3 @@
-"""支持 `python -m gpucore` 直接启动。"""
 
 import sys
 

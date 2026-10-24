@@ -6,7 +6,6 @@ body:
   - type: markdown
     attributes:
       value: |
-        ## 怎么产出这份报告
 
         1. 下载最新免安装包（[Releases](https://github.com/KKT446/GpuCore/releases/latest)）并解压
         2. 打开命令行（cmd 或 PowerShell），`cd` 到解压出的目录

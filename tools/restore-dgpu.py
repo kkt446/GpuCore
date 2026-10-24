@@ -1,7 +1,3 @@
-"""把独显恢复到通电状态（测试或异常退出后的清理工具）。
-
-用法:  python tools/restore-dgpu.py
-"""
 
 from __future__ import annotations
 
@@ -12,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gpuswitch.asusprobe import ECO_ON, AtkAcpi, nvidia_present  # noqa: E402
+from gpuswitch.asusprobe import ECO_ON, AtkAcpi, nvidia_present
 
 
 def smi_state() -> str:

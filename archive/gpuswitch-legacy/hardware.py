@@ -1,26 +1,3 @@
-"""厂商硬件层：直接读写显卡电源状态 / MUX。
-
-这层做的事情和奥创（Armoury Crate）、G-Helper 是同一件事——通过厂商的
-ACPI 接口切换显卡的供电与显示通路，所以它是"真切换"，不是改偏好。
-
-目前实现了 ASUS 笔记本的通道（在 ASUS 双显卡机型上实测可用）：
-
-    \\\\.\\ATKACPI  +  DeviceIoControl(0x0022240C)
-        DSTS (0x53545344) 读
-        DEVS (0x53564544) 写
-
-    设备号（来自 G-Helper 的 AsusACPI.cs，本机实测确认）
-        GPUEco  0x00090020 : 0 = 独显开启(标准)   1 = 独显关闭(集显模式)
-        GPUMux  0x00090016 : 0 = 集显  1 = 标准(混合)  2 = 独显直连
-
-其它厂商（联想/戴尔/惠普等）没有统一接口，本模块会返回 available=False，
-程序自动回退到"注册表偏好 + 守护"方案，功能不会残废。
-
-安全约束（写之前一律先读）：
-  * 只在状态确实不同时才写，避免无意义地触发固件动作
-  * MUX 处于"独显直连"时禁止关掉独显（否则屏幕直接黑掉）
-  * 写 MUX 会重新枚举显示通路，可能黑屏数秒并需要重启，属于危险操作
-"""
 
 from __future__ import annotations
 
@@ -37,15 +14,14 @@ from .paths import is_windows
 
 logger = log.get(__name__)
 
-# --- ASUS ACPI ---
 ATKACPI_PATH = r"\\.\ATKACPI"
 CONTROL_CODE = 0x0022240C
-DSTS = 0x53545344  # 读设备
-DEVS = 0x53564544  # 写设备
+DSTS = 0x53545344
+DEVS = 0x53564544
 
-DEV_GPU_ECO = 0x00090020   # 独显节能：0 开启独显 / 1 关闭独显
+DEV_GPU_ECO = 0x00090020
 DEV_GPU_ECO_VIVO = 0x00090120
-DEV_GPU_MUX = 0x00090016   # 显示通路：0 集显 / 1 标准 / 2 独显直连
+DEV_GPU_MUX = 0x00090016
 DEV_GPU_MUX_VIVO = 0x00090026
 DEV_GPU_DISPLAY_CONNECT = 0x00090030
 DEV_GPU_XG_CONNECTED = 0x00090018
@@ -60,18 +36,13 @@ MUX_ULTIMATE = 2
 
 @dataclass
 class HardwareMode:
-    """一个可选的显卡硬件模式。"""
 
     mode_id: str
     label: str
     description: str
-    #: 切换是否需要重启（MUX 通常需要；独显电源开关不需要）
     needs_reboot: bool = False
-    #: 切换过程是否会短暂黑屏
     may_blackout: bool = False
-    #: 是否要求独显必须存在
     requires_dgpu: bool = True
-    #: 对应的硬件寄存器语义
     eco: Optional[int] = None
     mux: Optional[int] = None
 
@@ -116,12 +87,6 @@ class HardwareResult:
     def __bool__(self) -> bool:
         return self.ok
 
-
-# ---------------------------------------------------------------------------
-# 基类
-# ---------------------------------------------------------------------------
-
-
 class HardwareBackend:
     name = "none"
     vendor = ""
@@ -142,19 +107,11 @@ class HardwareBackend:
     def restore(self, state: HardwareState) -> HardwareResult:
         return HardwareResult(False, "无法还原：没有可用的硬件通道")
 
-
-# ---------------------------------------------------------------------------
-# ASUS 实现
-# ---------------------------------------------------------------------------
-
-
 class AsusAtkAcpi:
-    """\\\\.\\ATKACPI 的最小封装：读 DSTS / 写 DEVS。"""
 
     def __init__(self) -> None:
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._handle: Optional[int] = None
-        # RLock：公开方法加锁、_call 在句柄缺失时也会 open()，普通 Lock 会死锁
         self._lock = threading.RLock()
         self._configure()
 
@@ -224,14 +181,12 @@ class AsusAtkAcpi:
             return bytes(out_buf)
 
     def get(self, device_id: int) -> Optional[int]:
-        """读设备值；返回 None 表示不支持。"""
         args = device_id.to_bytes(4, "little") + (0).to_bytes(4, "little")
         out = self._call(DSTS, args)
         if not out or len(out) < 4:
             return None
         raw = int.from_bytes(out[0:4], "little", signed=False)
         value = raw - 0x10000
-        # G-Helper 约定：返回 -65536 视为"该设备号不支持"
         if raw == 0 or value == -65536:
             return None
         return value
@@ -241,7 +196,6 @@ class AsusAtkAcpi:
         return self._call(DSTS, args, out_size)
 
     def set(self, device_id: int, status: int) -> Optional[int]:
-        """写设备值；返回 ACPI 的 result（1 表示成功），None 表示调用失败。"""
         args = device_id.to_bytes(4, "little") + (status & 0xFFFFFFFF).to_bytes(4, "little")
         out = self._call(DEVS, args)
         if not out or len(out) < 4:
@@ -260,7 +214,6 @@ class AsusHardware(HardwareBackend):
         self._eco_id = DEV_GPU_ECO
         self._mux_id = DEV_GPU_MUX
 
-    # ---- 探测 ----
 
     def available(self) -> bool:
         if self._probed is not None:
@@ -271,7 +224,6 @@ class AsusHardware(HardwareBackend):
         if not self._acpi.open():
             self._probed = False
             return False
-        # ROG 与 VivoBook 用不同的设备号，逐个试
         eco = self._acpi.get(DEV_GPU_ECO)
         if eco is not None:
             self._eco_id, self._mux_id = DEV_GPU_ECO, DEV_GPU_MUX
@@ -285,27 +237,14 @@ class AsusHardware(HardwareBackend):
         self._probed = False
         return False
 
-    # ---- 读 ----
 
     def read_state(self) -> HardwareState:
-        """读取硬件状态。
-
-        **关键**：独显供电状态不能用 GPUEco 寄存器回读判断。
-        实测本机型（FX608LM / BIOS 315）写 eco=1 后独显确实断电
-        （nvidia-smi 报 NVML Not Found、设备从系统消失），
-        但 DSTS 读回始终是 0。早期版本信了这个寄存器，
-        导致程序认为"独显还开着"，守护于是反复把独显又打开（误抢回 14 次）。
-
-        所以 eco 字段在这里被**规范化为权威信号**：
-        nvidia-smi 能读到独显 -> ECO_ON；读不到 -> ECO_OFF。
-        """
         if not self.available():
             return HardwareState(available=False, vendor=self.vendor, detail="ATKACPI 不可用")
 
         raw_eco = self._acpi.get(self._eco_id)
         mux = self._acpi.get(self._mux_id)
 
-        # 权威判据：独显在不在系统里
         try:
             from .asusprobe import nvidia_present
 
@@ -313,7 +252,6 @@ class AsusHardware(HardwareBackend):
         except Exception:
             present = None
 
-        # 规范化 eco：优先相信"独显在不在"，寄存器只作参考
         if present is True:
             eco = ECO_ON
         elif present is False:
@@ -354,7 +292,6 @@ class AsusHardware(HardwareBackend):
         )
         return f"{dgpu}；显示通路：{state.mux_label}"
 
-    # ---- 模式表 ----
 
     def modes(self) -> List[HardwareMode]:
         state = self.read_state()
@@ -400,7 +337,6 @@ class AsusHardware(HardwareBackend):
             )
         return modes
 
-    # ---- 写 ----
 
     def apply_mode(self, mode: HardwareMode) -> HardwareResult:
         if not self.available():
@@ -413,9 +349,7 @@ class AsusHardware(HardwareBackend):
         blackout = False
         reboot = False
 
-        # --- 1) MUX（危险，放前面处理）---
         if mode.mux is not None and state.mux is not None and mode.mux != state.mux:
-            # 安全闸：独显直连状态下不能关独显，否则屏幕会黑
             if mode.eco == ECO_OFF and state.mux == MUX_ULTIMATE:
                 return HardwareResult(
                     False,
@@ -433,7 +367,6 @@ class AsusHardware(HardwareBackend):
             time.sleep(1.5)
             state = self.read_state()
 
-        # --- 2) 独显供电 ---
         if mode.eco is not None and state.eco is not None and mode.eco != state.eco:
             if mode.eco == ECO_OFF and state.mux == MUX_ULTIMATE:
                 return HardwareResult(
@@ -447,7 +380,6 @@ class AsusHardware(HardwareBackend):
                 return HardwareResult(
                     False, "独显供电切换被固件拒绝", detail=f"ACPI result={result}"
                 )
-            # 关独显后系统会重新枚举设备，给它一点时间
             time.sleep(1.0 if mode.eco == ECO_OFF else 0.6)
 
         after = self.read_state()
@@ -466,14 +398,12 @@ class AsusHardware(HardwareBackend):
         )
 
     def restore(self, state: HardwareState) -> HardwareResult:
-        """把硬件恢复到某个记录下来的状态（守护线程回滚用）。"""
         if not self.available() or not state.available:
             return HardwareResult(False, "无法还原：硬件通道不可用")
         current = self.read_state()
         if current.eco == state.eco and current.mux == state.mux:
             return HardwareResult(True, "无需还原", changed=False)
 
-        # 先恢复独显供电，再恢复 MUX（顺序很重要，避免黑屏）
         if state.eco is not None and current.eco != state.eco:
             if state.eco == ECO_OFF and (current.mux == MUX_ULTIMATE):
                 return HardwareResult(False, "还原被阻止", detail="独显直连下不能关独显")
@@ -494,7 +424,6 @@ class AsusHardware(HardwareBackend):
         return HardwareResult(True, f"已还原硬件状态（{self.describe(after)}）", changed=True)
 
     def estimate_power_state(self) -> str:
-        """给界面用的一句人话。"""
         state = self.read_state()
         if not state.available:
             return "硬件通道不可用"
@@ -503,12 +432,6 @@ class AsusHardware(HardwareBackend):
         if state.mux == MUX_ULTIMATE:
             return "独显直连 · 性能最强"
         return "独显已开启 · 标准混合"
-
-
-# ---------------------------------------------------------------------------
-# 兜底实现
-# ---------------------------------------------------------------------------
-
 
 class NullHardware(HardwareBackend):
     name = "generic"
@@ -523,14 +446,7 @@ class NullHardware(HardwareBackend):
             available=False, vendor="", detail="本机没有厂商 ACPI 显卡通道（非 ASUS 机型属于正常情况）"
         )
 
-
-# ---------------------------------------------------------------------------
-# 探测：找出本机支持的拥有者
-# ---------------------------------------------------------------------------
-
-
 def detect_hardware() -> HardwareBackend:
-    """返回本机可用的硬件后端，找不到就返回兜底实现。"""
     if not is_windows():
         return NullHardware()
 
@@ -548,7 +464,6 @@ def detect_hardware() -> HardwareBackend:
 
 
 def nvidia_power_state() -> Dict[str, object]:
-    """用 nvidia-smi 读独显的实时电源状态，用于界面交叉验证。"""
     if not is_windows():
         return {}
     try:

@@ -1,9 +1,3 @@
-"""命令行自检：枚举显卡、采样指标、注册热键、构建界面，最后汇总。
-
-用法:
-    python -m gpuswitch --check          # 只做自检，不弹面板
-    python -m gpuswitch --json           # 以 JSON 打印显卡信息
-"""
 
 from __future__ import annotations
 
@@ -77,9 +71,6 @@ def run_check() -> int:
         from .config import load
         from .hotkey import GlobalHotkey, parse_hotkey
 
-        # 自检会真的注册一次全局热键。如果程序本身正在运行并占着配置里的热键，
-        # 这里必然失败——那是正确行为而不是缺陷，所以允许用环境变量换一个
-        # 自检专用组合（测试套件就是这么做的）。
         hotkey_text = os.environ.get("GPUSWITCH_CHECK_HOTKEY") or str(load().get("hotkey", "ctrl+a"))
         spec = parse_hotkey(hotkey_text)
         print(f"  配置: {hotkey_text} -> 修饰键 0x{spec.modifiers:04X} 主键 0x{spec.vk:02X} ({spec.vk_name})")

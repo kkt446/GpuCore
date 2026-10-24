@@ -1,20 +1,3 @@
-"""极简热切换：只做一件事——把独显开或关。
-
-这个文件刻意保持最小：**没有守护线程、没有锁定、没有自动重试**。
-之前那些"自动抢回"的逻辑会在用户点按钮后把状态改回去，
-表现成"按哪个都不管用"，所以这一版全部删掉。
-
-切换顺序完全照 G-Helper 的 GPUModeControl.SetGPUEco：
-
-    eco=1（关独显）:  KillGPUApps -> DisposeGpuControl -> StopNVService -> ACPI
-    eco=0（开独显）:  ACPI -> StartNVService
-
-用法：
-    python -m gpuswitch.hotswitch off     # 关独显（集显模式）
-    python -m gpuswitch.hotswitch on      # 开独显（标准模式）
-    python -m gpuswitch.hotswitch status  # 看当前状态
-    python -m gpuswitch.hotswitch gui     # 就两个按钮的窗口
-"""
 
 from __future__ import annotations
 
@@ -99,7 +82,6 @@ def run(cmd, timeout=20):
 
 
 def dgpu_works() -> bool:
-    """独显现在能不能用。只在用户主动查看/切换后调用一次。"""
     try:
         r = run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], timeout=6)
     except Exception:
@@ -109,7 +91,6 @@ def dgpu_works() -> bool:
 
 
 def gpu_processes():
-    """正在占用独显的进程（pid, 名字）。"""
     found = []
     try:
         r = run(["nvidia-smi", "--query-compute-apps=pid,process_name",
@@ -146,7 +127,6 @@ def svc(action: str) -> list:
 
 
 def switch(off: bool, log=print) -> bool:
-    """off=True 关独显（集显模式），off=False 开独显（标准模式）。"""
     acpi = Acpi()
     try:
         if off:
@@ -180,7 +160,6 @@ def switch(off: bool, log=print) -> bool:
             if started:
                 log(f"已启动：{'、'.join(started)}")
 
-        # 等设备重新枚举，然后只探测一次（探测本身会唤醒独显，所以不做轮询）
         wait = 10 if off else 14
         log(f"等待设备重新枚举（{wait} 秒）…")
         time.sleep(wait)

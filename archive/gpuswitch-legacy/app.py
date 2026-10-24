@@ -1,12 +1,3 @@
-"""程序装配与主循环。
-
-启动流程：
-    1. 初始化日志与配置
-    2. 枚举显卡、启动指标采集
-    3. 注册全局快捷键（默认 ctrl+a）
-    4. 创建面板（默认隐藏，等快捷键呼出）
-    5. 进入 Tk 主循环
-"""
 
 from __future__ import annotations
 
@@ -41,7 +32,6 @@ logger = log.get(__name__)
 
 
 def _asus_available() -> bool:
-    """本机是否有可用的华硕 ACPI 显卡通道。"""
     try:
         from .asusprobe import AtkAcpi
 
@@ -72,7 +62,6 @@ class GpuSwitchApp:
         self.adapters: List[GpuAdapter] = enumerate_adapters(use_cache=False)
         self.backend: SwitchBackend = get_backend()
 
-        # 硬件通道（ASUS 等厂商的 ACPI 接口）与显卡选择锁定
         self.hardware = detect_hardware()
         self.lock = GpuLock(
             self.hardware,
@@ -80,11 +69,8 @@ class GpuSwitchApp:
             record=LockRecord.from_dict(config.get("lock")),
         )
 
-        # 若本程序自身被设置了显卡偏好，DXGI 创建期指定可以让它立刻生效
         self._apply_dxgiself_hint()
 
-        # 华硕机型用专用面板：模式即硬件三档，占用把独显/核显分开显示，
-        # 不再出现"哪块卡在用"的歧义。非华硕机型回落到通用面板。
         self._asus = _asus_available()
         if self._asus:
             from .asus_ui import AsusPanel
@@ -126,7 +112,6 @@ class GpuSwitchApp:
             self.backend.name, self.hardware.name, self.watcher.mode or "未启用",
         )
 
-    # ---- 按程序指定显卡（通用方案）----
 
     def _app_rules(self) -> List[LaunchRule]:
         rules: List[LaunchRule] = []
@@ -137,7 +122,6 @@ class GpuSwitchApp:
         return rules
 
     def _setup_watcher(self) -> None:
-        """装好进程拦截器；没有规则或没开启时不启动线程。"""
         rules = self._app_rules()
         self.watcher = ProcessWatcher(
             rules_provider=self._app_rules,
@@ -154,7 +138,6 @@ class GpuSwitchApp:
             logger.info("进程监听已启动，共 %d 条规则", len(rules))
 
     def _on_process_detected(self, rule: LaunchRule, pid: int, cmdline: List[str]) -> None:
-        """拦截到受监控程序启动。偏好已在监听线程里写好。"""
         text = f"检测到「{rule.name}」启动，已写入显卡偏好：{rule.preference_label}"
         if rule.ask:
             text += "（已按询问设置处理）"
@@ -170,10 +153,8 @@ class GpuSwitchApp:
         text += "；若它已经开始渲染，重启该程序后偏好才会生效"
         self.panel.queue_message(text, "info")
 
-    # ---- 锁定 ----
 
     def _restore_lock(self) -> None:
-        """启动时恢复上次的锁定。"""
         if not self.config.get("lock_restore_on_start", True):
             return
         if not self.lock.record.enabled or not self.lock.record.mode_id:
@@ -193,7 +174,6 @@ class GpuSwitchApp:
             )
 
     def _on_lock_event(self, event: LockEvent) -> None:
-        """守护线程回调 -> 转成界面消息（线程安全）。"""
         kind = "ok" if event.kind in ("restored", "applied") else "warn"
         text = event.message
         if event.detail:
@@ -201,7 +181,6 @@ class GpuSwitchApp:
         self.panel.queue_message(text, kind)
 
     def toggle_lock(self, mode) -> None:
-        """点击锁定卡上的模式按钮。"""
         if not self.hardware.available():
             self.panel.set_message(
                 "本机没有厂商硬件通道，无法做硬件级锁定；已改用 Windows 图形首选项守护",
@@ -210,7 +189,6 @@ class GpuSwitchApp:
             return
 
         status = self.lock.status()
-        # 点已锁定的那个模式 = 解锁
         if status.get("enabled") and status.get("mode_id") == mode.mode_id:
             self.lock.disable()
             self._save_lock()
@@ -254,7 +232,6 @@ class GpuSwitchApp:
         config_module.save(self.config)
 
     def _confirm(self, message: str) -> bool:
-        """危险操作确认框。"""
         try:
             from tkinter import messagebox
 
@@ -264,10 +241,8 @@ class GpuSwitchApp:
         except Exception:
             return False
 
-    # ---- 启动辅助 ----
 
     def _apply_dxgiself_hint(self) -> None:
-        """把当前首选显卡通过 DXGI 未公开接口告知本进程（可用则生效）。"""
         try:
             current = describe_current(self.adapters)
             if current and current.vendor_id:
@@ -275,15 +250,9 @@ class GpuSwitchApp:
         except Exception:
             pass
 
-    #: 主热键被占用时依次尝试的候选
     FALLBACK_HOTKEYS = ("ctrl+alt+g", "ctrl+shift+g", "ctrl+alt+f12", "ctrl+shift+f12")
 
     def _setup_hotkey(self) -> None:
-        """注册全局快捷键；被占用时自动回退到候选键，并把结果写回配置。
-
-        这一点很重要：如果用户设的热键被别的程序占着，而程序默默继续跑，
-        用户按什么都不会有反应，还以为程序坏了。
-        """
         configured = str(
             os.environ.get("GPUSWITCH_HOTKEY") or self.config.get("hotkey", "ctrl+a")
         )
@@ -323,10 +292,8 @@ class GpuSwitchApp:
             "error",
         )
 
-    # ---- 快捷键 ----
 
     def _on_hotkey(self) -> None:
-        """在消息线程里被调用，只做计数，交给 Tk 主线程处理。"""
         self.pending_hotkey += 1
 
     def _drain_hotkey(self) -> None:
@@ -338,26 +305,13 @@ class GpuSwitchApp:
                 self.panel.show()
         self.root.after(120, self._drain_hotkey)
 
-    # ---- 华硕硬件模式切换 ----
 
     def _current_adapters(self) -> List[GpuAdapter]:
-        """面板取显卡列表的入口（带缓存，避免每秒都枚举 DXGI）。"""
         adapters = enumerate_adapters(use_cache=True, cache_ms=4000)
         self.adapters = adapters
         return adapters
 
     def request_hardware_mode(self, mode) -> None:
-        """华硕面板上的「集显模式 / 标准模式 / 独显直连」按钮。
-
-        真正的硬件切换：直接改独显供电与显示通路，几秒内生效，
-        不需要重启任何程序（独显直连那档例外，会黑屏并需要重启）。
-
-        顺序至关重要（之前顺序错了，表现成"点了没反应"）：
-            1. 先让锁定守护让路——否则它会把刚切过去的状态当成"被篡改"抢回来
-            2. 切 MUX（如需要）
-            3. 切独显供电
-            4. 用新模式重新锁定，再放开守护
-        """
         name = getattr(mode, "label", str(mode))
 
         if getattr(mode, "may_blackout", False) or getattr(mode, "needs_reboot", False):
@@ -372,7 +326,6 @@ class GpuSwitchApp:
         self.panel.set_message(f"正在切换到「{name}」…", "info")
         self.root.update_idletasks()
 
-        # --- 1) 守护让路 ---
         self.lock.expect_change()
 
         try:
@@ -384,14 +337,11 @@ class GpuSwitchApp:
             return
 
         if not result.ok:
-            # 没切成，恢复守护，别让状态裸奔
             self.lock.cancel_change()
             self.panel.set_message(f"切换失败：{result.message} {result.detail}", "error")
             self.panel.refresh_static()
             return
 
-        # --- 4) 用新模式重新锁定并放开守护 ---
-        #      只记录，不再动硬件——切换已经做完了，enable() 会画蛇添足
         lock_note = ""
         if self.config.get("auto_lock_on_switch", True):
             try:
@@ -438,11 +388,6 @@ class GpuSwitchApp:
         self.panel.refresh_static()
 
     def _apply_asus_mode(self, mode):
-        """真正动硬件：先 MUX 再独显供电，写完必须回读校验。
-
-        这里不用 hardware.apply_mode——它自带"发现不符就纠正"的逻辑，
-        会和用户的显式切换打架。安全闸（独显直连时拒绝关独显）在这里保留。
-        """
         from .hardware import ECO_OFF, ECO_ON, MUX_ULTIMATE, HardwareResult
 
         state = self.hardware.read_state()
@@ -452,7 +397,6 @@ class GpuSwitchApp:
         needs_reboot = False
         may_blackout = False
 
-        # --- MUX ---
         if mode.mux is not None and state.mux is not None and mode.mux != state.mux:
             if mode.eco == ECO_OFF and state.mux == MUX_ULTIMATE:
                 return HardwareResult(
@@ -467,9 +411,6 @@ class GpuSwitchApp:
             time.sleep(1.5)
             state = self.hardware.read_state()
 
-        # --- 独显供电：走 gpu_power 的完整流程 ---
-        # G-Helper 的做法：关独显前必须先结束占用独显的进程、释放自己的 GPU 句柄、
-        # 停掉 NVIDIA 容器服务，否则 EC 不会真正断电。
         changed = False
         note = ""
         if mode.eco is not None and state.eco is not None and mode.eco != state.eco:
@@ -493,9 +434,6 @@ class GpuSwitchApp:
 
         after = self.hardware.read_state()
 
-        # 注意：这里**不**再做"独显还在不在"的探测校验。
-        # 实测本机型上任何探测（nvidia-smi / SetupAPI）都会把刚断电的独显唤醒，
-        # 校验动作本身会破坏结果，还会误报失败。以 ACPI 接受写入为成功判据。
         message = (
             f"已切换到「{mode.label}」"
             if (changed or may_blackout)
@@ -512,19 +450,8 @@ class GpuSwitchApp:
             may_blackout=may_blackout,
         )
 
-    # ---- 通用切换（非华硕机型）----
-    # ---- 切换 ----
 
     def request_switch(self, adapter: GpuAdapter) -> None:
-        """按下某个显卡按钮时的入口。
-
-        顺序很重要：
-          1. 先走**硬件切换**（ASUS ACPI 直接改显卡供电/显示通路）——这是真·热切换，
-             立刻生效，不需要重启任何程序
-          2. 再写**显卡偏好**——让以后新启动的程序也默认用这块卡
-          3. 硬件可用时顺带锁定，防止打完游戏退出后被其它工具切回去
-        没有硬件通道的机器（非 ASUS 等）自动退化为第 2 步，并明确告知用户。
-        """
         if adapter.kind == TYPE_VIRTUAL:
             self.panel.set_message(f"{adapter.name} 是虚拟显卡，不参与切换", "warn")
             return
@@ -532,7 +459,6 @@ class GpuSwitchApp:
         mode = self._hardware_mode_for(adapter)
         hardware_ready = bool(mode) and self.hardware.available()
 
-        # 已经是当前显卡时：硬件层面已满足就不重复动作
         if hardware_ready:
             state = self.hardware.read_state()
             if mode is not None and self.lock._satisfied(mode, state):
@@ -553,7 +479,6 @@ class GpuSwitchApp:
                 ):
                     self.panel.set_message("已取消切换", "info")
                     return
-            # --- 1) 硬件热切换 ---
             try:
                 result = self.lock.enable(mode, source="switch")
             except Exception as exc:
@@ -576,7 +501,6 @@ class GpuSwitchApp:
                 hardware_note += "（未开启锁定）"
             self.panel.refresh_hardware()
 
-        # --- 2) 显卡偏好：让以后启动的程序也用这块卡 ---
         pref_note = ""
         try:
             scope = str(self.config.get("switch_scope", "self")).lower()
@@ -591,7 +515,6 @@ class GpuSwitchApp:
             logger.exception("写入显卡偏好失败")
             pref_note = f"写入显卡偏好失败：{exc}"
 
-        # --- 3) 汇总反馈 ---
         parts = []
         if hardware_note:
             parts.append(f"硬件切换：{hardware_note}")
@@ -615,11 +538,9 @@ class GpuSwitchApp:
         self.panel.refresh_static()
 
     def _hardware_mode_for(self, adapter: GpuAdapter):
-        """把一块显卡映射到对应的硬件模式。"""
         if not self.hardware.available():
             return None
         want = "dgpu_on" if adapter.vendor_id != 0x8086 else "dgpu_off"
-        # 集显映射到"关闭独显"，让核显成为唯一渲染器
         if adapter.kind == TYPE_INTEGRATED:
             want = "dgpu_off"
         elif adapter.kind == TYPE_DISCRETE:
@@ -639,7 +560,6 @@ class GpuSwitchApp:
         self.panel.set_message(text, kind)
         logger.info("切换结果[%s]: %s | %s", adapter.name, result.ok, result.message)
 
-    # ---- 其它动作 ----
 
     def reload_adapters(self) -> List[GpuAdapter]:
         invalidate_cache()
@@ -652,15 +572,14 @@ class GpuSwitchApp:
             self.panel.set_message("当前平台没有等价的图形设置面板", "warn")
             return
         try:
-            os.startfile("ms-settings:display-advancedgraphics")  # type: ignore[attr-defined]
+            os.startfile("ms-settings:display-advancedgraphics")
             self.panel.set_message("已打开 Windows 图形设置", "ok")
         except Exception:
             try:
-                os.startfile("ms-settings:display")  # type: ignore[attr-defined]
+                os.startfile("ms-settings:display")
             except Exception as exc:
                 self.panel.set_message(f"无法打开设置：{exc}", "error")
 
-    # ---- 运行 ----
 
     def run(self) -> int:
         self.collector.start()
@@ -691,14 +610,7 @@ class GpuSwitchApp:
             pass
         self.collector.stop()
 
-
-# ---------------------------------------------------------------------------
-# 命令行
-# ---------------------------------------------------------------------------
-
-
 def run_apps_cli(args) -> int:
-    """命令行管理「按程序指定显卡」规则。"""
     from .watcher import (
         LaunchRule,
         delete_preference,
@@ -717,7 +629,6 @@ def run_apps_cli(args) -> int:
             cfg["watch_processes"] = True
         config_module.save(cfg)
 
-    # ---- 列表 ----
     if args.app_list:
         print(f"进程拦截：{'已开启' if cfg.get('watch_processes') else '未开启'}")
         print(f"规则数量：{len(rules)}")
@@ -735,7 +646,6 @@ def run_apps_cli(args) -> int:
                 suffix = f"  [{', '.join(flags)}]" if flags else ""
                 print(f"  {rule.name:<28} {rule.preference_label}{suffix}")
                 print(f"      {rule.path}")
-        # 顺带显示注册表里已有的偏好，便于对照
         prefs = read_all_preferences()
         if prefs:
             print(f"\n注册表 HKCU\\...\\UserGpuPreferences 共 {len(prefs)} 条：")
@@ -747,7 +657,6 @@ def run_apps_cli(args) -> int:
                 print(f"  [{label}{' · 询问' if ask else ''}] {path}")
         return 0
 
-    # ---- 新增 ----
     if args.app_add:
         path = str(Path(args.app_add))
         if not path.lower().endswith(".exe"):
@@ -775,7 +684,6 @@ def run_apps_cli(args) -> int:
         print(f"\n配置已保存。开启进程拦截：--app-add ... --watch-apps")
         return 0
 
-    # ---- 删除 ----
     if args.app_remove:
         path = str(Path(args.app_remove)).lower()
         before = len(rules)
@@ -785,7 +693,6 @@ def run_apps_cli(args) -> int:
         print(f"已删除 {before - len(rules)} 条规则，注册表清理：{'成功' if removed else '无该项'}")
         return 0
 
-    # ---- 按规则启动 ----
     if args.app_launch:
         path = str(Path(args.app_launch))
         rule = None
@@ -844,10 +751,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_lock_cli(args) -> int:
-    """命令行版的锁定操作：--lock / --unlock / --hw-status / --watch-lock。
-
-    不创建窗口，方便脚本化调用，也方便在终端里验证。
-    """
     from .hardware import nvidia_power_state
 
     config_module.ensure_exists()

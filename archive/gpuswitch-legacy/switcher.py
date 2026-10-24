@@ -1,18 +1,3 @@
-"""首选显卡切换。
-
-各平台能做到的"切换"并不相同，本模块把它们统一成同一套接口：
-
-* Windows：写入 GPU 首选项（Windows 图形设置同源）。
-      - 全局默认：HKCU\\...\\UserGpuPreferences 下名为 "GpuPreference" 的值，
-        需要管理员权限（提权后自动写入）。
-      - 指定程序：同名键下以 exe 全路径为名，无需管理员。
-  注意：Windows 的显卡归属由 GPU 驱动在**程序创建 D3D 设备时**决定，
-  已运行的程序不会被改变，需要重启该程序才生效——这是系统限制，
-  包括"设置 > 系统 > 屏幕 > 显示卡"也是同样行为。
-
-* Linux：优先 nvidia-prime / prime-select，其次 DRI_PRIME 环境变量。
-* macOS：受系统限制，只能打开"节能"设置面板由用户手动切换。
-"""
 
 from __future__ import annotations
 
@@ -41,12 +26,6 @@ logger = log.get(__name__)
 USER_PREFS_SUBKEY = r"Software\Microsoft\DirectX\UserGpuPreferences"
 GLOBAL_VALUE_NAME = "GpuPreference"
 
-
-# ---------------------------------------------------------------------------
-# 结果与权限
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class SwitchResult:
     ok: bool
@@ -61,7 +40,6 @@ class SwitchResult:
 
 
 def is_elevated() -> bool:
-    """当前进程是否以管理员身份运行。"""
     if not is_windows():
         return os.geteuid() == 0 if hasattr(os, "geteuid") else False
     try:
@@ -71,7 +49,6 @@ def is_elevated() -> bool:
 
 
 def relaunch_elevated(argv: Optional[Sequence[str]] = None) -> bool:
-    """以管理员身份重新启动自身（弹一次 UAC）。"""
     if not is_windows():
         return False
     try:
@@ -84,12 +61,6 @@ def relaunch_elevated(argv: Optional[Sequence[str]] = None) -> bool:
         logger.warning("提权失败: %s", exc)
         return False
 
-
-# ---------------------------------------------------------------------------
-# 后端基类
-# ---------------------------------------------------------------------------
-
-
 class SwitchBackend:
     name = "none"
     description = ""
@@ -97,9 +68,7 @@ class SwitchBackend:
     def capabilities(self) -> Dict[str, object]:
         return {}
 
-    #: 该后端是否支持"全局默认显卡"这一档
     supports_global: bool = False
-    #: 该后端是否支持"指定程序"
     supports_per_app: bool = False
 
     def preference_value(self, adapter: GpuAdapter) -> int:
@@ -107,7 +76,6 @@ class SwitchBackend:
             return PREF_POWER_SAVING
         if adapter.kind == TYPE_DISCRETE:
             return PREF_HIGH_PERFORMANCE
-        # 未知类型：有独立显存的按高性能处理
         return PREF_HIGH_PERFORMANCE if adapter.dedicated_vram > 512 * 1024 * 1024 else PREF_POWER_SAVING
 
     def current_global(self) -> Optional[int]:
@@ -124,12 +92,6 @@ class SwitchBackend:
 
     def clear_global(self) -> SwitchResult:
         return SwitchResult(False, "当前后端不支持清除全局偏好")
-
-
-# ---------------------------------------------------------------------------
-# Windows
-# ---------------------------------------------------------------------------
-
 
 class WindowsBackend(SwitchBackend):
     name = "windows-gpu-preference"
@@ -159,7 +121,6 @@ class WindowsBackend(SwitchBackend):
             "当前是否管理员": "是" if is_elevated() else "否",
         }
 
-    # ---- 注册表读写 ----
 
     def _open_key(self, write: bool):
         import winreg
@@ -170,7 +131,6 @@ class WindowsBackend(SwitchBackend):
         except FileNotFoundError:
             if not write:
                 return None
-            # 键不存在时逐级创建
             parent = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER, r"Software\Microsoft\DirectX", 0, winreg.KEY_WRITE
             )
@@ -201,10 +161,6 @@ class WindowsBackend(SwitchBackend):
         return result
 
     def build_value(self, adapter: GpuAdapter, include_device: bool = True) -> str:
-        """构造 GpuPreference 字符串。
-
-        带厂商/设备号时只对那块卡生效，这也是 Windows 自己写入的格式。
-        """
         pref = self.preference_value(adapter)
         if include_device and adapter.vendor_id and adapter.device_id:
             return f"GpuPreference={pref};{adapter.vendor_id:04X}:{adapter.device_id:04X};"
@@ -242,7 +198,6 @@ class WindowsBackend(SwitchBackend):
         except OSError as exc:
             return False, f"注册表写入失败：{exc}"
 
-    # ---- 对外动作 ----
 
     def set_global(self, adapter: GpuAdapter, elevate: bool = False) -> SwitchResult:
         pref = self.preference_value(adapter)
@@ -260,7 +215,6 @@ class WindowsBackend(SwitchBackend):
         ok, error = self._write_values({GLOBAL_VALUE_NAME: self.build_value(adapter)})
         if not ok:
             if elevate and not is_elevated():
-                # 当前不是管理员，尝试提权重启
                 if relaunch_elevated():
                     return SwitchResult(
                         True,
@@ -278,7 +232,6 @@ class WindowsBackend(SwitchBackend):
                 scope="global",
             )
 
-        # 同时给已知的"正在用 GPU"的程序写一份，让影响更明显
         applied = self._apply_to_current_gpu_apps(adapter)
         label = "集显（省电）" if pref == PREF_POWER_SAVING else "独显（高性能）"
         detail = f"已写入 {self.build_value(adapter)}"
@@ -331,10 +284,8 @@ class WindowsBackend(SwitchBackend):
         except OSError as exc:
             return SwitchResult(False, "清除失败", detail=str(exc))
 
-    # ---- 辅助 ----
 
     def _apply_to_current_gpu_apps(self, adapter: GpuAdapter) -> int:
-        """给当前正在使用 GPU 的程序写上同样的偏好，扩大生效范围。"""
         pids = _gpu_pids()
         if not pids:
             return 0
@@ -343,7 +294,6 @@ class WindowsBackend(SwitchBackend):
             exe = _pid_exe(pid)
             if not exe:
                 continue
-            # 自己不写，避免把本程序也限制住
             if exe.lower() == sys.executable.lower():
                 continue
             values[exe] = self.build_value(adapter)
@@ -354,7 +304,6 @@ class WindowsBackend(SwitchBackend):
 
 
 def _gpu_pids() -> List[int]:
-    """从 PDH 计数器里取当前有 GPU 活动的进程号。"""
     try:
         from .metrics import PdhQuery, _GPU_ENGINE_PATH, _instance_of
 
@@ -380,7 +329,6 @@ def _gpu_pids() -> List[int]:
 
 
 def _pid_exe(pid: str) -> Optional[str]:
-    """取进程的可执行文件全路径。"""
     import ctypes.wintypes as wt
 
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -396,12 +344,6 @@ def _pid_exe(pid: str) -> Optional[str]:
         return None
     finally:
         kernel32.CloseHandle(handle)
-
-
-# ---------------------------------------------------------------------------
-# Linux
-# ---------------------------------------------------------------------------
-
 
 class LinuxBackend(SwitchBackend):
     name = "linux-prime"
@@ -478,12 +420,6 @@ class LinuxBackend(SwitchBackend):
             scope="app",
         )
 
-
-# ---------------------------------------------------------------------------
-# macOS
-# ---------------------------------------------------------------------------
-
-
 class MacBackend(SwitchBackend):
     name = "macos-manual"
     description = "macOS 不提供程序化显卡切换，只能打开设置面板手动切换"
@@ -515,18 +451,7 @@ class MacBackend(SwitchBackend):
     def set_for_app(self, adapter: GpuAdapter, exe_path: str) -> SwitchResult:
         return SwitchResult(False, "macOS 不支持按程序指定显卡", needs_restart=False)
 
-
-# ---------------------------------------------------------------------------
-# DXGI 创建期指定（给子进程用）
-# ---------------------------------------------------------------------------
-
-
 def set_process_default_adapter(vendor_id: int, device_id: int) -> bool:
-    """在创建 D3D 设备前调用，强制本进程使用指定显卡。
-
-    这是 DXGI 的未公开接口，仅在部分系统/驱动上有效，因此只作为加分项：
-    成功时可以让新启动的子进程直接用上目标显卡，失败也不影响注册表方案。
-    """
     if not is_windows():
         return False
     try:
@@ -540,12 +465,6 @@ def set_process_default_adapter(vendor_id: int, device_id: int) -> bool:
         logger.debug("SetProcessDefaultGraphicsAdapter 不可用: %s", exc)
         return False
 
-
-# ---------------------------------------------------------------------------
-# 入口
-# ---------------------------------------------------------------------------
-
-
 def get_backend() -> SwitchBackend:
     if is_windows():
         return WindowsBackend()
@@ -557,7 +476,6 @@ def get_backend() -> SwitchBackend:
 
 
 def describe_switch_capability(adapter: GpuAdapter) -> str:
-    """给界面用的一句人话说明。"""
     if adapter.kind == TYPE_INTEGRATED:
         return "切到核显：省电、发热低，适合办公与看视频"
     if adapter.kind == TYPE_DISCRETE:

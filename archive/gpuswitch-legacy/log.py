@@ -1,4 +1,3 @@
-"""极简日志：同时写文件与 stderr，避免依赖。"""
 
 from __future__ import annotations
 
@@ -20,8 +19,6 @@ def setup(level: int = logging.INFO, to_file: bool = True) -> logging.Logger:
     logger.setLevel(level)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S")
 
-    # Windows 控制台默认是 GBK，中文日志会乱码甚至抛 UnicodeEncodeError。
-    # 这里显式用 UTF-8 并忽略无法编码的字符，保证任何终端都不会崩。
     try:
         stream = logging.StreamHandler(
             open(sys.stderr.fileno(), "w", encoding="utf-8", errors="replace", closefd=False)
@@ -39,7 +36,6 @@ def setup(level: int = logging.INFO, to_file: bool = True) -> logging.Logger:
             handler.setFormatter(fmt)
             logger.addHandler(handler)
         except Exception:
-            # 日志文件不可写不应影响主流程
             pass
 
     _configured = True

@@ -1,19 +1,3 @@
-"""独显电源切换的完整流程（照抄 G-Helper 的做法）。
-
-G-Helper 的 `GPUModeControl.SetGPUEco` 在写 ACPI 之前有三步准备工作，
-缺一步独显就不会真正断电：
-
-    1. KillGPUApps()        —— 结束所有正在占用独显的进程
-    2. DisposeGpuControl()  —— 释放自己持有的 GPU 句柄（NVAPI/驱动句柄）
-    3. StopNVService()      —— 停掉 NVIDIA 显示容器服务（NV 平台）
-
-然后才 `acpi.DeviceSet(GPUEco, eco)`。
-
-本项目早期版本直接写 ACPI，结果"有时生效有时不生效"——原因就是
-独显被占用（包括被本程序自己的 nvidia-smi / PDH / DXGI 枚举按着）时，
-EC 拒绝真正断电。切换到 eco=0 时 G-Helper 还会重启 NVIDIA 服务让
-驱动重新枚举设备。
-"""
 
 from __future__ import annotations
 
@@ -32,7 +16,6 @@ from .paths import is_windows, run_capture
 
 logger = log.get(__name__)
 
-# 系统关键进程绝不结束
 _PROTECTED_NAMES = {
     "system", "registry", "memory compression", "csrss.exe", "wininit.exe",
     "winlogon.exe", "services.exe", "lsass.exe", "smss.exe", "svchost.exe",
@@ -43,7 +26,6 @@ _PROTECTED_NAMES = {
     "nvdisplay.container.exe", "python.exe", "pythonw.exe", "ghelper.exe",
 }
 
-#: NVIDIA 相关服务（停掉再重启，可让驱动重新枚举独显）
 NV_SERVICES = ("NVDisplay.ContainerLocalSystem", "NvContainerLocalSystem")
 
 
@@ -66,17 +48,7 @@ class EcoResult:
     def __bool__(self) -> bool:
         return self.ok
 
-
-# ---------------------------------------------------------------------------
-# 1) 找出占用独显的进程
-# ---------------------------------------------------------------------------
-
-
 def gpu_processes() -> List[GpuProcess]:
-    """列出正在使用 NVIDIA 独显的进程。
-
-    用 nvidia-smi 的 compute/graphics 应用列表；拿不到就退回 PDH 计数器。
-    """
     found: List[GpuProcess] = []
 
     if is_windows() or sys.platform.startswith("linux"):
@@ -102,7 +74,6 @@ def gpu_processes() -> List[GpuProcess]:
         except Exception as exc:
             logger.debug("枚举独显进程失败: %s", exc)
 
-    # 图形类应用 nvidia-smi 常常不列，用 PDH 的引擎占用补一遍
     try:
         from .metrics import PdhQuery, _GPU_ENGINE_PATH, _instance_of
         from .gpu import enumerate_adapters
@@ -142,7 +113,6 @@ def gpu_processes() -> List[GpuProcess]:
 
 
 def killable(processes: List[GpuProcess]) -> List[GpuProcess]:
-    """过滤掉不该结束的进程。"""
     result = []
     for item in processes:
         if item.name.lower() in _PROTECTED_NAMES:
@@ -154,7 +124,6 @@ def killable(processes: List[GpuProcess]) -> List[GpuProcess]:
 
 
 def kill_processes(processes: List[GpuProcess]) -> List[str]:
-    """结束这些进程，返回实际结束掉的名字。"""
     killed: List[str] = []
     for item in processes:
         try:
@@ -168,19 +137,7 @@ def kill_processes(processes: List[GpuProcess]) -> List[str]:
             logger.debug("结束 pid %d 异常: %s", item.pid, exc)
     return killed
 
-
-# ---------------------------------------------------------------------------
-# 2) 释放本程序自己持有的 GPU 句柄
-# ---------------------------------------------------------------------------
-
-
 def release_own_gpu_handles() -> None:
-    """释放本进程持有的显卡相关句柄。
-
-    主要是让 DXGI 工厂/适配器对象被回收，并刷新 PDH 计数器句柄。
-    Python 这边没有 NVAPI 句柄要放，但 DXGI 枚举会持有适配器引用，
-    释放后 EC 才更容易把独显断电。
-    """
     try:
         from .gpu import invalidate_cache
 
@@ -193,14 +150,7 @@ def release_own_gpu_handles() -> None:
         )
     except Exception:
         pass
-    # 给驱动一点时间回收引用
     time.sleep(0.5)
-
-
-# ---------------------------------------------------------------------------
-# 3) NVIDIA 服务
-# ---------------------------------------------------------------------------
-
 
 def nv_services_state() -> dict:
     state = {}
@@ -220,7 +170,6 @@ def nv_services_state() -> dict:
 
 
 def stop_nv_services() -> List[str]:
-    """停掉 NVIDIA 容器服务（需要管理员，失败不影响主流程）。"""
     stopped = []
     for name in NV_SERVICES:
         try:
@@ -251,12 +200,6 @@ def restart_nv_services(delay: float = 3.0) -> List[str]:
     time.sleep(delay)
     return start_nv_services()
 
-
-# ---------------------------------------------------------------------------
-# 完整流程
-# ---------------------------------------------------------------------------
-
-
 def set_gpu_eco(
     eco: int,
     acpi,
@@ -265,15 +208,6 @@ def set_gpu_eco(
     kill_apps: bool = True,
     verify: bool = False,
 ) -> EcoResult:
-    """按 G-Helper 的顺序切换独显电源。
-
-    eco=1 关闭独显、eco=0 开启独显。
-
-    关于 verify：默认**不做**事后探测。实测这台机器上任何探测独显的动作
-    （nvidia-smi 会加载驱动、SetupAPI 会触发枚举）都会把刚断电的独显唤醒，
-    于是"校验"本身就把结果破坏了，还会让调用方误判成失败。
-    所以默认以"ACPI 接受了写入"为成功判据，需要强校验时再传 verify=True。
-    """
     def note(text: str) -> None:
         logger.info(text)
         if on_progress:
@@ -289,7 +223,6 @@ def set_gpu_eco(
     services: List[str] = []
 
     if eco == 1:
-        # --- 关独显前的三步准备（G-Helper 的必需步骤）---
         if kill_apps:
             procs = killable(gpu_processes())
             if procs:

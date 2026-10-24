@@ -1,4 +1,3 @@
-"""跨平台路径解析：配置文件、日志、缓存目录。"""
 
 from __future__ import annotations
 
@@ -20,7 +19,6 @@ def is_linux() -> bool:
 
 
 def _writable(path: Path) -> bool:
-    """探测目录是否真的可写（%APPDATA% 在被沙箱/受限令牌约束时不可写）。"""
     try:
         path.mkdir(parents=True, exist_ok=True)
         probe = path / ".write_probe"
@@ -32,10 +30,6 @@ def _writable(path: Path) -> bool:
 
 
 def app_data_dir() -> Path:
-    """返回可写的应用数据目录。
-
-    优先系统标准位置，不可写时依次回退到用户主目录、脚本所在目录。
-    """
     candidates = []
     if is_windows():
         base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
@@ -53,12 +47,10 @@ def app_data_dir() -> Path:
     for candidate in candidates:
         if _writable(candidate):
             return candidate
-    # 全部失败时返回第一个，让调用方报出明确错误
     return candidates[0]
 
 
 def project_root() -> Path:
-    """项目根目录（含 README 的那一层）。"""
     return Path(__file__).resolve().parent.parent
 
 
@@ -75,12 +67,6 @@ def asset_path(name: str) -> Path:
 
 
 def run_capture(args, timeout: float = 5.0, **kwargs):
-    """运行外部命令并捕获输出。
-
-    中文 Windows 上 subprocess 默认用 GBK 解码，遇到 UTF-8 中文输出会直接抛
-    UnicodeDecodeError（连 text=True 都救不了）。这里统一按 UTF-8 解码并对
-    无法解码的字节做替换，保证任何区域设置下都不会崩。
-    """
     import subprocess
 
     kwargs.setdefault("capture_output", True)

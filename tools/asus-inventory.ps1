@@ -1,11 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    ASUS hardware inventory - READ ONLY.
-
-    Enumerates every vendor interface available on THIS machine and reports the
-    live values, so we can see exactly what is usable and what is not.
-    Performs NO writes.
-#>
+﻿
 
 [CmdletBinding()]
 param()
@@ -83,7 +76,6 @@ if ([Atk]::Open()) {
     exit 1
 }
 
-# G-Helper 的完整设备号表，逐个读值，看哪些真正可用
 $devices = [ordered]@{
     'GPUEcoROG (独显节能)'      = 0x00090020
     'GPUEcoVivo'                = 0x00090120

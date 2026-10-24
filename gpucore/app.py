@@ -1,13 +1,3 @@
-"""GpuCore（双芯）—— 华硕显卡热切换 + 资源监视（Python 版）
-
-架构上解决卡顿：
-    * 所有采集（CPU/RAM/GPU/ACPI）都在**后台线程**里跑
-    * 界面只读一份缓存快照，永不阻塞
-    * nvidia-smi 是子进程（几百毫秒），放在线程里 + 结果缓存
-    * 拖动窗口/切页签时界面依然跟手
-
-界面参照 G-Helper：窄长条窗口、浅色卡片、描边按钮，停靠右下角。
-"""
 
 from __future__ import annotations
 
@@ -43,9 +33,6 @@ from .hardware import (
     write_mux,
 )
 
-# ---------------------------------------------------------------------------
-# 常量
-# ---------------------------------------------------------------------------
 
 CONTROL_CODE = 0x0022240C
 DSTS = 0x53545344
@@ -53,7 +40,6 @@ DEVS = 0x53564544
 
 NV_SERVICES = ("NVDisplay.ContainerLocalSystem", "NvContainerLocalSystem")
 
-# --- 配色（G-Helper 浅色主题）---
 BG = "#F3F3F3"
 CARD = "#FFFFFF"
 BTN = "#FFFFFF"
@@ -72,7 +58,6 @@ CARD_BORDER = "#E4E4E4"
 
 FONT = "Microsoft YaHei UI"
 
-# 界面整体缩放（按 DPI）
 _scale = 1.0
 
 
@@ -80,7 +65,6 @@ def px(v: float) -> int:
     return int(round(v * _scale))
 
 
-#: 字号整体放大系数（用户反馈字太小）
 FONT_BOOST = 1.25
 
 
@@ -103,21 +87,7 @@ def prepare_dpi() -> float:
         _scale = 1.0
     return _scale
 
-
-# ---------------------------------------------------------------------------
-# ACPI
-# ---------------------------------------------------------------------------
-
-
-#: 兼容别名。ACPI 通道实现已移到 hardware.py（那边还负责机型自适应的设备号探测），
-#: 这里保留旧名字，避免外部脚本/旧测试引用不到。
 Acpi = AtkAcpi
-
-
-# ---------------------------------------------------------------------------
-# 快速系统指标（Win32，不依赖 psutil，微秒级）
-# ---------------------------------------------------------------------------
-
 
 class _FILETIME(ctypes.Structure):
     _fields_ = [("lo", wt.DWORD), ("hi", wt.DWORD)]
@@ -138,7 +108,6 @@ class _MEMSTATUS(ctypes.Structure):
 
 
 class FastSystem:
-    """CPU / 内存：走 Win32 原生调用，比 WMI 和性能计数器快几个数量级。"""
 
     def __init__(self) -> None:
         self.k = ctypes.WinDLL("kernel32")
@@ -171,15 +140,7 @@ class FastSystem:
         total = int(st.ullTotalPhys)
         return total - int(st.ullAvailPhys), total
 
-
-# ---------------------------------------------------------------------------
-# 数据快照 + 后台采集线程
-# ---------------------------------------------------------------------------
-
-
 class _PdhValue(ctypes.Structure):
-    """PDH 返回值。必须定义在模块级——放在函数里每次调用都是新类，
-    和先前注册的 argtypes 对不上，会抛 ArgumentError。"""
 
     class _U(ctypes.Union):
         _fields_ = [("longValue", ctypes.c_long), ("doubleValue", ctypes.c_double),
@@ -195,7 +156,7 @@ class Snapshot:
     cpu: float = 0.0
     ram_used: int = 0
     ram_total: int = 0
-    dgpu: Optional[float] = None       # None = 独显断电
+    dgpu: Optional[float] = None
     dgpu_vram: int = 0
     dgpu_vram_total: int = 0
     igpu: float = 0.0
@@ -210,10 +171,6 @@ _MACHINE_MODEL: Optional[str] = None
 
 
 def machine_model() -> str:
-    """机型名（读注册表，比 WMI 快得多，也不需要权限）。
-
-    别的华硕机器上界面标题会显示它们自己的型号，方便用户反馈问题时对上号。
-    """
     global _MACHINE_MODEL
     if _MACHINE_MODEL is not None:
         return _MACHINE_MODEL
@@ -247,12 +204,6 @@ def machine_model() -> str:
 
 
 def child_env() -> dict:
-    """给子进程准备环境变量。
-
-    中文 Windows 上 Python 子进程的 stdout 编码取决于控制台代码页：从 GUI 进程
-    （pythonw、没有控制台）或管道里启动时会是 GBK/cp936，于是本程序按 UTF-8 解码
-    就会拿到乱码。显式约定 UTF-8，父子两端才不会各说各话。
-    """
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     return env
@@ -267,7 +218,6 @@ def run_quiet(cmd, timeout=6) -> subprocess.CompletedProcess:
 
 
 def nvidia_available() -> bool:
-    """独显是否可用。会唤醒独显，所以调用方要控制频率。"""
     try:
         r = run_quiet(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
     except Exception:
@@ -277,14 +227,8 @@ def nvidia_available() -> bool:
 
 
 def detect_igpu_luid() -> str:
-    """找出核显的 LUID。
-
-    用 DXGI 枚举真实适配器（能拿到厂商 ID），把 LUID 转成 PDH 的实例名格式。
-    这比"猜哪块显存占用为 0"可靠得多——之前就是靠猜，猜错导致核显读数不对。
-    """
     import re
 
-    # --- 首选：DXGI 枚举，按厂商 ID 找核显 ---
     try:
         dxgi = ctypes.WinDLL("dxgi")
 
@@ -337,7 +281,6 @@ def detect_igpu_luid() -> str:
                 luid = ((int(d.AdapterLuid.HighPart) & 0xFFFFFFFF) << 32) | int(d.AdapterLuid.LowPart)
                 inst = f"0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}"
 
-                # 核显判据：名称里有集成显卡关键字，或显存很小
                 is_igpu = any(k in name for k in (
                     "intel", "uhd", "iris", "radeon graphics", "vega", "adreno"))
                 if not is_igpu and video_mem < 512 * 1024 * 1024 and "nvidia" not in name:
@@ -362,7 +305,6 @@ def detect_igpu_luid() -> str:
     except Exception:
         pass
 
-    # --- 回退：从 PDH 实例里挑一块真实存在的（优先 Intel）---
     try:
         r = run_quiet([
             "powershell", "-NoProfile", "-Command",
@@ -373,8 +315,6 @@ def detect_igpu_luid() -> str:
         for line in (r.stdout or "").splitlines():
             m = re.search(r"luid_(0x[0-9a-fA-F]+)_(0x[0-9a-fA-F]+)", line)
             if m:
-                # 统一成 0x%08x_0x%08x：PDH 实例名是大写、DXGI 是小写，
-                # 两处格式不一致会让后面的字符串比较时偶发匹配不上。
                 instances.add("%s_%s" % (
                     "0x%08x" % int(m.group(1), 16),
                     "0x%08x" % int(m.group(2), 16),
@@ -388,10 +328,6 @@ def detect_igpu_luid() -> str:
 
 
 class Monitor(threading.Thread):
-    """后台采集线程。
-
-    界面永远不直接调用任何采集函数，只读 self.snapshot。
-    """
 
     def __init__(self, interval: float = 1.0, on_log: Optional[Callable[[str], None]] = None) -> None:
         super().__init__(name="monitor", daemon=True)
@@ -399,19 +335,15 @@ class Monitor(threading.Thread):
         self.on_log = on_log
         self.snapshot = Snapshot()
         self._lock = threading.Lock()
-        # 注意：不能叫 self._stop —— threading.Thread 基类有同名方法 _stop()，
-        # 覆写成 Event 之后 join() 会调用它并抛 TypeError: 'Event' object is not callable
         self._stop_event = threading.Event()
         self._acpi = AtkAcpi()
         self._dev = DeviceMap()
         self._fast = FastSystem()
-        # 机型自适应：探一次设备号（便宜的 16 次读），结果全局复用
         try:
             self._dev = probe_devices(self._acpi)
         except Exception as exc:
             self._dev.notes.append(f"设备号探测异常: {exc}")
         self._igpu_luid = ""
-        # nvidia-smi 探测结果缓存：避免每次刷新都起子进程
         self._dgpu_checked_at = 0.0
         self._dgpu_works = False
         self._dgpu_cache_seconds = 3.0
@@ -419,26 +351,20 @@ class Monitor(threading.Thread):
         self._dgpu_vram = 0
         self._dgpu_vram_total = 0
         self._dgpu_fail_streak = 0
-        # 核显查询缓存
         self._igpu_checked_at = 0.0
         self._igpu_cache_seconds = 2.0
         self._igpu_cached = 0.0
-        # PDH 复用句柄
         self._pdh_handle = None
         self._pdh_query = None
         self._pdh_counters: Dict[str, object] = {}
-        # ACPI 传感器缓存（温度这类值变化慢，没必要每次采样都读 EC）
         self._sensor_cache: Dict[str, tuple] = {}
         self._sensor_cache_seconds = 2.0
 
-    # --- 机型自适应信息 ---
     @property
     def devices(self) -> DeviceMap:
-        """本机实际可用的设备号与功能开关。"""
         return self._dev
 
     def _sensor(self, key: str) -> Optional[int]:
-        """读一个 ACPI 传感器（带缓存）。key 见 hardware.SENSOR_DEVICES。"""
         dev = self._dev.sensors.get(key)
         if dev is None:
             return None
@@ -450,12 +376,10 @@ class Monitor(threading.Thread):
         self._sensor_cache[key] = (now, val)
         return val
 
-    # --- 生命周期 ---
     def stop(self) -> None:
         self._stop_event.set()
 
     def run(self) -> None:
-        # 先测一次核显 LUID（只做一次）
         try:
             self._igpu_luid = detect_igpu_luid()
             if self.on_log:
@@ -463,14 +387,12 @@ class Monitor(threading.Thread):
         except Exception:
             self._igpu_luid = "0x00000000_0x0001111f"
 
-        self._fast.cpu_percent()  # 建立 CPU 基线
+        self._fast.cpu_percent()
         self._fast.memory()
-        # 先同步发布一次完整快照：这样界面第一帧就有真实数据，不会显示 0
         self._sample()
         self._refresh_dgpu()
         self._dgpu_checked_at = time.monotonic()
         self._igpu_checked_at = 0.0
-        # 首次探测失败不算数，避免启动瞬间误判成"已断电"
         self._dgpu_fail_streak = 0 if self._dgpu_works else 0
 
         while not self._stop_event.is_set():
@@ -482,16 +404,9 @@ class Monitor(threading.Thread):
             self._stop_event.wait(self.interval)
 
     def _sample(self) -> None:
-        """一次采样。
-
-        设计要点：**快指标立即产出并发布，慢指标后台异步更新。**
-        nvidia-smi 和核显查询都是子进程（几百毫秒到几秒），
-        如果串在循环里，界面要等很久才有数据。
-        """
         snap = Snapshot()
         snap.igpu_luid = self._igpu_luid
 
-        # --- 快指标：原生调用，几十微秒，立即发布 ---
         snap.cpu = self._fast.cpu_percent()
         snap.ram_used, snap.ram_total = self._fast.memory()
         snap.mux = read_mux(self._acpi, self._dev.mux)
@@ -505,22 +420,15 @@ class Monitor(threading.Thread):
         with self._lock:
             self.snapshot = snap
 
-        # --- 慢指标：各自按自己的节奏，在后台线程里更新 ---
         now = time.monotonic()
         if now - self._dgpu_checked_at > self._dgpu_cache_seconds:
-            self._dgpu_checked_at = now          # 先占位，避免重复触发
+            self._dgpu_checked_at = now
             threading.Thread(target=self._refresh_dgpu, daemon=True).start()
         if now - self._igpu_checked_at > self._igpu_cache_seconds:
             self._igpu_checked_at = now
             threading.Thread(target=self._refresh_igpu, daemon=True).start()
 
     def _refresh_dgpu(self) -> None:
-        """后台查独显：是否可用 + 占用/显存。
-
-        去抖很关键：nvidia-smi 偶尔会超时或短暂失败，如果一次失败就翻成
-        "已断电"，下次成功又变回 0%，界面就会在两者之间"蹦迪"。
-        所以要求**连续多次确认失败**才认定独显断电。
-        """
         works = nvidia_available()
         dgpu = None
         vram = vram_total = 0
@@ -537,7 +445,6 @@ class Monitor(threading.Thread):
                     vram = int(float(parts[1]) * 1024 * 1024)
                     vram_total = int(float(parts[2]) * 1024 * 1024)
             except Exception:
-                # 探测到了设备但读占用失败：保留上次的占用值，别清成 0
                 with self._lock:
                     dgpu = self._dgpu_val if self._dgpu_val is not None else 0.0
                     vram = self._dgpu_vram
@@ -549,12 +456,10 @@ class Monitor(threading.Thread):
                 self._dgpu_works = True
             else:
                 self._dgpu_fail_streak += 1
-                # 连续 3 次（约 9 秒）都探测不到，才真的判定为断电
                 if self._dgpu_fail_streak >= 3:
                     self._dgpu_works = False
                     dgpu = None
                 else:
-                    # 抖动期：维持上一次的状态和数值，不让界面跳
                     dgpu = self._dgpu_val
                     vram = self._dgpu_vram
                     vram_total = self._dgpu_vram_total
@@ -570,7 +475,6 @@ class Monitor(threading.Thread):
             self.snapshot.dgpu_vram_total = vram_total
 
     def _refresh_igpu(self) -> None:
-        """后台查核显占用：PDH 直调（不再起 PowerShell 子进程）。"""
         value = 0.0
         try:
             value = self._pdh_igpu()
@@ -581,7 +485,6 @@ class Monitor(threading.Thread):
             self.snapshot.igpu = value
 
     def _pdh_igpu(self) -> float:
-        """用 PDH 直接读核显最忙引擎的占用（微秒级，不阻塞）。"""
         try:
             pdh = ctypes.WinDLL("pdh")
         except OSError:
@@ -591,8 +494,6 @@ class Monitor(threading.Thread):
         PDH_FMT_NOCAP100 = 0x00008000
         VAL = _PdhValue
 
-        # 关键：64 位下必须显式声明 argtypes，否则 ctypes 默认把句柄当 32 位 int 截断，
-        # PDH 函数会静默失败（表现为"计数器数 0、读数恒为 0"）。
         pdh.PdhOpenQueryW.argtypes = [wt.LPCWSTR, ctypes.c_size_t, ctypes.POINTER(wt.HANDLE)]
         pdh.PdhOpenQueryW.restype = ctypes.c_long
         pdh.PdhAddEnglishCounterW.argtypes = [
@@ -612,7 +513,6 @@ class Monitor(threading.Thread):
         pdh.PdhRemoveCounter.argtypes = [wt.HANDLE]
         pdh.PdhRemoveCounter.restype = ctypes.c_long
 
-        # 复用查询句柄，避免每次重建
         if self._pdh_handle is None:
             handle = wt.HANDLE()
             if pdh.PdhOpenQueryW(None, 0, ctypes.byref(handle)) != 0:
@@ -621,12 +521,10 @@ class Monitor(threading.Thread):
             self._pdh_query = pdh
             self._pdh_counters = {}
         query = self._pdh_query
-        # 展开通配路径
         size = wt.DWORD(0)
         pdh.PdhExpandWildCardPathW(None, r"\GPU Engine(*)\Utilization Percentage",
                                    None, ctypes.byref(size), 0)
         if size.value == 0:
-            # 首次可能返回 0，给一次重试
             time.sleep(0.2)
             pdh.PdhExpandWildCardPathW(None, r"\GPU Engine(*)\Utilization Percentage",
                                        None, ctypes.byref(size), 0)
@@ -637,8 +535,6 @@ class Monitor(threading.Thread):
                                    buf, ctypes.byref(size), 0)
         paths = [p for p in buf[: size.value].split("\0") if p]
 
-        # PDH 路径里的 LUID 是**大写**十六进制（0x000110E7），DXGI 给的是小写，
-        # 必须忽略大小写比较，否则一条都匹配不上（读数恒为 0）。
         key = (self._igpu_luid or "").lower()
         wanted = [p for p in paths if key and key in p.lower()] if key else []
         for p in list(self._pdh_counters):
@@ -665,7 +561,6 @@ class Monitor(threading.Thread):
                 h, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, ctypes.byref(fmt), ctypes.byref(v)
             ) == 0:
                 engine = v.value.doubleValue
-                # 单个引擎占用上限 100%
                 best = max(best, min(100.0, engine))
         return round(best, 0)
 
@@ -674,21 +569,7 @@ class Monitor(threading.Thread):
             s = self.snapshot
             return Snapshot(**vars(s))
 
-    # --- 操作（供界面按钮调用，会在工作线程里跑）---
     def switch_eco(self, off: bool, log: Callable[[str], None]) -> bool:
-        """切独显供电。
-
-        关键：**写 ACPI 之前必须先做三步准备**（G-Helper 的 SetGPUEco 同样如此），
-        否则独显被占用时 EC 会拒绝真正断电，表现为"有时生效有时不生效"：
-
-            1. 结束正在占用独显的进程
-            2. 释放本进程持有的显卡句柄（DXGI / PDH 缓存）
-            3. 停掉 NVIDIA 显示容器服务
-
-        关于校验：本机实测**不做**事后探测。任何探测独显的动作（nvidia-smi 会加载驱动、
-        SetupAPI 会触发枚举）都会把刚断掉的独显唤醒，于是"校验"本身破坏了结果。
-        所以成功判据是「固件接受了写入」（DEVS result == 1）。
-        """
         if self._dev.eco is None:
             log("这台机器没有可用的独显供电设备号，无法切换")
             return False
@@ -728,11 +609,6 @@ class Monitor(threading.Thread):
         return True
 
     def _kill_gpu_apps(self, log: Callable[[str], None]) -> List[str]:
-        """结束正在占用独显的进程，返回被结束的名字。
-
-        只结束能确定的用户程序：nvidia-smi 的 compute 列表 + PDH 引擎里带 pid 的实例。
-        系统进程和本程序自己绝不结束（否则界面会把自己杀掉）。
-        """
         protected = {
             "system", "registry", "memory compression", "csrss.exe", "wininit.exe",
             "winlogon.exe", "services.exe", "lsass.exe", "smss.exe", "svchost.exe",
@@ -788,10 +664,6 @@ class Monitor(threading.Thread):
         return killed
 
     def _release_gpu_handles(self) -> None:
-        """释放本进程持有的显卡相关句柄，让 EC 更容易把独显断电。
-
-        主要是关掉 PDH 查询句柄，并把 DXGI 探测缓存作废。
-        """
         try:
             if self._pdh_query is not None:
                 self._pdh_query.close()
@@ -830,7 +702,6 @@ class Monitor(threading.Thread):
 
 
 def set_gpu_preference(pref: int) -> bool:
-    """写全局显卡首选项（HKCU），决定新启动的程序用哪块卡。"""
     import winreg
 
     try:
@@ -846,11 +717,6 @@ def set_gpu_preference(pref: int) -> bool:
 
 
 def stop_nv_services() -> List[str]:
-    """停掉 NVIDIA 显示容器服务（需要管理员，失败不影响主流程）。
-
-    停它是为了让驱动释放独显，EC 才能真正断电；用户是普通账户时这一步会失败，
-    但 GPUEco 写入通常仍然有效，所以只记录不报错。
-    """
     stopped = []
     for name in NV_SERVICES:
         try:
@@ -870,11 +736,6 @@ def start_nv_services() -> List[str]:
         except Exception:
             pass
     return started
-
-
-# ---------------------------------------------------------------------------
-# 全局快捷键（RegisterHotKey + 消息循环，放在独立线程）
-# ---------------------------------------------------------------------------
 
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
 WM_HOTKEY, WM_QUIT = 0x0312, 0x0012
@@ -934,14 +795,11 @@ def parse_hotkey(text: str) -> HotkeySpec:
     if keys[0] not in _VK:
         raise ValueError(f"不认识的按键 {keys[0]!r}")
     if mods == 0:
-        # 全局热键必须带修饰键：单独一个字母会把该键在**所有程序**里吃掉，
-        # 属于非常恶劣的副作用，直接拒绝。
         raise ValueError("全局热键必须包含修饰键（Ctrl / Alt / Shift / Win）")
     return HotkeySpec(text.strip(), mods, _VK[keys[0]], keys[0])
 
 
 class HotkeyListener:
-    """全局快捷键。触发时调用 callback（在消息线程里，回调要自己转回界面线程）。"""
 
     def __init__(self, text: str, callback: Callable[[], None]) -> None:
         self.spec = parse_hotkey(text)
@@ -992,17 +850,11 @@ class HotkeyListener:
         if self._thread:
             self._thread.join(timeout=1.5)
 
-
-# ---------------------------------------------------------------------------
-# 开机自启
-# ---------------------------------------------------------------------------
-
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = APP_NAME
 
 
 def on_ac_power() -> bool:
-    """当前是否插着电源（自动切换模式用）。"""
     try:
         class SPS(ctypes.Structure):
             _fields_ = [("ACLineStatus", ctypes.c_byte),
@@ -1021,7 +873,6 @@ def on_ac_power() -> bool:
 
 
 def reboot_now(delay: int = 3) -> bool:
-    """重启电脑（MUX 切换后必须重启才生效），给用户几秒缓冲。"""
     try:
         subprocess.Popen(
             ["shutdown", "/r", "/t", str(delay), "/c", f"{APP_NAME}: 显卡模式切换，需要重启生效"],
@@ -1033,12 +884,6 @@ def reboot_now(delay: int = 3) -> bool:
 
 
 def autostart_command() -> str:
-    """开机自启要执行的命令 —— 按运行形态自动选择。
-
-    * 便携包：直接用包里的 GpuCore.exe（安装版那种 "pythonw -m gpucore"
-      在别人机器上根本不存在）
-    * 安装版：pythonw.exe -m gpucore
-    """
     from .branding import bundle_dir, portable_mode
 
     if portable_mode():
@@ -1070,7 +915,6 @@ def set_autostart(enabled: bool) -> bool:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_WRITE) as k:
             if enabled:
                 winreg.SetValueEx(k, RUN_NAME, 0, winreg.REG_SZ, cmd)
-                # 顺手清掉改名前的旧自启项，避免两个程序同时开机启动
                 for legacy in LEGACY_RUN_NAMES:
                     if legacy != RUN_NAME:
                         try:
@@ -1085,11 +929,6 @@ def set_autostart(enabled: bool) -> bool:
         return True
     except OSError:
         return False
-
-
-# ---------------------------------------------------------------------------
-# 配置持久化
-# ---------------------------------------------------------------------------
 
 CONFIG_PATH = config_path()
 
@@ -1109,11 +948,6 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    """原子写配置：先写临时文件再替换。
-
-    直接 write_text 有真实风险 —— 写一半被杀（关机/切换显卡导致进程被杀）会留下
-    半个 JSON，下次启动就丢了热键和置顶设置。
-    """
     import json
 
     try:
@@ -1124,14 +958,7 @@ def save_config(cfg: dict) -> None:
     except Exception:
         pass
 
-
-# ---------------------------------------------------------------------------
-# 界面
-# ---------------------------------------------------------------------------
-
-
 class Card(tk.Frame):
-    """G-Helper 风格卡片：白底 + 细边框 + 标题行（左侧标题、右侧状态）。"""
 
     def __init__(self, master, title: str = "", **kw):
         super().__init__(master, bg=CARD, highlightbackground=CARD_BORDER,
@@ -1153,7 +980,6 @@ class Card(tk.Frame):
 
 
 class StatBar(tk.Frame):
-    """一行指标：左标签、右数值、下圆角条。"""
 
     def __init__(self, master, label: str, color: str, width: int = 344):
         super().__init__(master, bg=CARD)
@@ -1196,7 +1022,6 @@ class StatBar(tk.Frame):
 
 
 class ModeButton(tk.Frame):
-    """描边按钮；选中时用彩色边框高亮。"""
 
     def __init__(self, master, text: str, color: str, command=None, width=110, height=44):
         super().__init__(master, bg=BORDER, bd=0, highlightthickness=0, cursor="hand2")
@@ -1245,11 +1070,6 @@ class ModeButton(tk.Frame):
             self._paint(BTN, BORDER, DIM)
 
     def set_disabled(self, on: bool) -> None:
-        """机型不支持该功能时置灰。
-
-        置灰而不是隐藏：用户能看见"这台机器有这个档位但用不了"，
-        比按钮凭空消失更好理解。
-        """
         self._disabled = on
         self.configure(cursor="arrow" if on else "hand2")
         if on:
@@ -1277,10 +1097,8 @@ class App:
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self._hide)
 
-        # 默认置顶（用户要求常驻后台，随叫随到）
         self.root.attributes("-topmost", bool(self.config.get("always_on_top", True)))
 
-        # 停靠右下角
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
@@ -1291,9 +1109,7 @@ class App:
         self._setup_hotkey()
         self._tick()
 
-    # ---- 快捷键 ----
     def _setup_hotkey(self) -> None:
-        """注册全局快捷键：按一次呼出，再按一次收进后台。"""
         if self.hotkey:
             self.hotkey.stop()
             self.hotkey = None
@@ -1316,7 +1132,6 @@ class App:
             self._log(f"快捷键 {spec.describe()} 注册失败：{listener.error}（可能被占用）")
 
     def _drain_hotkey(self) -> None:
-        """把消息线程里的触发计数转到界面线程处理。"""
         if self._hotkey_fired:
             self._hotkey_fired = 0
             if self.root.state() == "normal" and self.root.winfo_viewable():
@@ -1336,7 +1151,6 @@ class App:
     def _hide(self) -> None:
         self.root.withdraw()
 
-    # ---- 设置面板 ----
     def _open_settings(self) -> None:
         win = tk.Toplevel(self.root)
         win.title("设置")
@@ -1349,7 +1163,6 @@ class App:
         tk.Label(win, text="设置", bg=BG, fg=TEXT, font=font(12, True)).pack(
             anchor="w", padx=px(14), pady=(px(12), px(8)))
 
-        # --- 快捷键 ---
         card = tk.Frame(win, bg=CARD, highlightbackground="#2C2C2C", highlightthickness=px(1))
         card.pack(fill="x", padx=px(12), pady=(0, px(8)))
 
@@ -1376,7 +1189,6 @@ class App:
                         font=font(7), anchor="w")
         hint.pack(fill="x", padx=px(10), pady=(0, px(9)))
 
-        # 按键录制
         current: Dict[str, str] = {"text": str(self.config.get("hotkey", "ctrl+alt+g"))}
         recording = {"on": False}
 
@@ -1400,7 +1212,6 @@ class App:
                 return ""
             keysym = (event.keysym or "").lower()
 
-            # 单独按修饰键：只做提示，不落定
             if keysym in ("control_l", "control_r", "alt_l", "alt_r",
                           "shift_l", "shift_r", "super_l", "super_r", "win_l", "win_r"):
                 mods = []
@@ -1420,7 +1231,6 @@ class App:
                 hint.configure(text="已取消", fg=ORANGE)
                 return "break"
 
-            # 主键名归一化
             name = keysym
             if len(keysym) == 1:
                 name = keysym
@@ -1466,7 +1276,6 @@ class App:
         entry.bind("<FocusOut>", on_focus_out)
         entry.bind("<KeyPress>", on_key)
 
-        # --- 开机自启 ---
         card2 = tk.Frame(win, bg=CARD, highlightbackground="#2C2C2C", highlightthickness=px(1))
         card2.pack(fill="x", padx=px(12), pady=(0, px(8)))
         var_auto = tk.BooleanVar(value=get_autostart())
@@ -1476,7 +1285,6 @@ class App:
             highlightthickness=0, bd=0, anchor="w").pack(
             fill="x", padx=px(10), pady=px(10))
 
-        # --- 置顶 ---
         card3 = tk.Frame(win, bg=CARD, highlightbackground="#2C2C2C", highlightthickness=px(1))
         card3.pack(fill="x", padx=px(12), pady=(0, px(8)))
         var_top = tk.BooleanVar(value=bool(self.config.get("always_on_top", True)))
@@ -1518,11 +1326,9 @@ class App:
             b.pack(side="right", padx=(px(6), 0))
             b.bind("<Button-1>", lambda _e, c=cmd: c())
 
-    # ---- 界面 ----
     def _build(self) -> None:
         pad = px(8)
 
-        # 卡片 1：状态
         c1 = Card(self.root)
         c1.pack(fill="x", padx=pad, pady=(pad, px(6)))
         self.model_lbl = tk.Label(c1, text="读取中…", bg=CARD, fg=FAINT, font=font(8), anchor="w")
@@ -1532,7 +1338,6 @@ class App:
         self.info_lbl = tk.Label(c1, text="", bg=CARD, fg=DIM, font=font(9), anchor="w")
         self.info_lbl.pack(fill="x", padx=px(9), pady=(0, px(9)))
 
-        # 卡片 2：资源监视
         c2 = Card(self.root, "资源监视")
         c2.pack(fill="x", padx=pad, pady=(0, px(6)))
         body2 = tk.Frame(c2, bg=CARD)
@@ -1546,7 +1351,6 @@ class App:
         self.bar_cpu = StatBar(body2, "CPU", "#38B26B", width=364)
         self.bar_cpu.pack(fill="x")
 
-        # 卡片 3：显卡模式（照 G-Helper：4 个按钮一排）
         c3 = Card(self.root, "显卡模式")
         c3.pack(fill="x", padx=pad, pady=(0, px(6)))
         self.mode_card = c3
@@ -1569,7 +1373,6 @@ class App:
 
         self.mode_buttons = [self.btn_eco, self.btn_std, self.btn_ult, self.btn_auto]
 
-        # 一行小按钮：标准混合 / 设置
         row_btn = tk.Frame(c3, bg=CARD)
         row_btn.pack(fill="x", padx=px(10), pady=(0, px(10)))
         for text, cmd in (("标准混合", self._do_standard), ("设置", self._open_settings)):
@@ -1581,7 +1384,6 @@ class App:
             b.bind("<Enter>", lambda _e, x=b: x.configure(bg=BTN_HOVER))
             b.bind("<Leave>", lambda _e, x=b: x.configure(bg=BTN))
 
-        # 卡片 4：日志
         c4 = Card(self.root)
         c4.pack(fill="both", expand=True, padx=pad, pady=(0, pad))
         self.log = tk.Text(c4, height=7, bg="#1C1C1C", fg="#B4B4B4", bd=0,
@@ -1599,7 +1401,6 @@ class App:
         btn_repair.pack(side="right")
         btn_repair.bind("<Button-1>", lambda _e: self._repair())
 
-    # ---- 日志 ----
     def _log(self, text: str) -> None:
         self.log.configure(state="normal")
         self.log.insert("end", text + "\n")
@@ -1607,10 +1408,8 @@ class App:
         self.log.configure(state="disabled")
 
     def _log_from_thread(self, text: str) -> None:
-        """后台线程只入队，由界面线程写入，避免跨线程操作控件。"""
         self._log_queue.append(text)
 
-    # ---- 刷新（只读缓存，永不阻塞）----
     def _tick(self) -> None:
         self._drain_hotkey()
 
@@ -1621,7 +1420,6 @@ class App:
             s = self.monitor.read()
             dev = self.monitor.devices
 
-            # 模式判定：按"这台机器实际支持什么"来，而不是按写死的设备号
             if s.mux == MUX_ULTIMATE and s.dgpu_works:
                 mode, idx = "独显直连", 2
             elif s.mux == MUX_IGPU:
@@ -1634,8 +1432,6 @@ class App:
             self.mode_lbl.configure(text=mode)
             for i, b in enumerate(self.mode_buttons):
                 b.set_selected(i == idx)
-            # 不支持的功能置灰：无独显供电设备号 → 集显/标准/自动都不可用；
-            # 无 MUX → 独显直连不可用
             for b in (self.btn_eco, self.btn_std, self.btn_auto):
                 b.set_disabled(not dev.can_eco)
             self.btn_ult.set_disabled(not dev.can_mux)
@@ -1674,7 +1470,6 @@ class App:
             if not self.model_lbl.cget("text") or self.model_lbl.cget("text") == "读取中…":
                 self.model_lbl.configure(text=f"{machine_model()}    ·    {dev.describe()}")
 
-            # 底部提示当前快捷键
             if hasattr(self, "hotkey_hint"):
                 if self.config.get("hotkey_enabled", True) and self.hotkey:
                     self.hotkey_hint.configure(text=f"按 {self.hotkey.spec.describe()} 呼出/收起")
@@ -1687,7 +1482,6 @@ class App:
         self.monitor._dgpu_checked_at = 0.0
         self._log("已强制刷新")
 
-    # ---- 切换：放到工作线程，界面不卡 ----
     def _run_async(self, fn: Callable[[], None]) -> None:
         def worker():
             try:
@@ -1708,12 +1502,6 @@ class App:
             off, lambda t: self._log_from_thread(t)))
 
     def _do_ultimate(self) -> None:
-        """独显直连。
-
-        关键：写完 MUX **必须重启**才生效（显示控制器要重新初始化）。
-        G-Helper 也是这么做的——它切完直接 shutdown /r。
-        只写 ACPI 不重启的话，你看到的仍是核显输出，像是"没生效"。
-        """
         if self._busy:
             return
         from tkinter import messagebox
@@ -1770,7 +1558,6 @@ class App:
         self._run_async(job)
 
     def _do_auto(self) -> None:
-        """自动切换：插电用独显，用电池关独显（对齐 G-Helper 的 gpu_auto）。"""
         if self._busy:
             return
         want_dgpu = on_ac_power()
@@ -1831,8 +1618,6 @@ class App:
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
-    # 控制台默认编码可能是 GBK（中文 Windows + 老控制台），自检报告里的 ✓ 会直接
-    # 抛 UnicodeEncodeError 把自检结果吞掉。先切成 UTF-8，切不动就退化成替代字符。
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")

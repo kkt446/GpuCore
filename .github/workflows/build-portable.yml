@@ -1,9 +1,5 @@
 name: build-portable
 
-# 打 tag（v1.0.0 这种）时自动出一个免安装 zip，挂到 Release 上，
-# 这样别人不用装 Python 也能直接下载即用。
-#
-# 也可以手动触发：Actions 页面 → build-portable → Run workflow。
 
 on:
   push:
@@ -24,8 +20,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # setup-python 装的是标准 CPython，自带 Lib / DLLs / tcl / tkinter，
-      # 正是 build-portable.ps1 需要的素材。
       - name: 找到运行时目录
         id: rt
         shell: pwsh
@@ -53,9 +47,6 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
-      # 注意：这里**不要**用 generate_release_notes，也不要用 body 覆盖，
-      # 因为这个 workflow 常常是补挂到一条已经手工建好的 Release 上的
-      # （先发 Release，再推 tag 触发打包）。带上 body 会把人写好的发布说明冲掉。
       - name: 挂到 Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

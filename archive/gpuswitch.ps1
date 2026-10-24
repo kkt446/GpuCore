@@ -1,18 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    华硕显卡热切换 —— 零依赖版（只用 Windows 自带的 PowerShell）
-
-    不需要 Python、不需要任何库。双击 热切换-GUI.cmd 出窗口，
-    或在命令行里用：
-        powershell -ExecutionPolicy Bypass -File 热切换.ps1 on      # 开独显（标准模式）
-        powershell -ExecutionPolicy Bypass -File 热切换.ps1 off     # 关独显（集显模式）
-        powershell -ExecutionPolicy Bypass -File 热切换.ps1 status  # 看状态
-
-    切换顺序照 G-Helper 的 GPUModeControl.SetGPUEco：
-        关独显：杀占用独显的进程 -> 停 NVIDIA 服务 -> 写 ACPI(GPUEco=1)
-        开独显：写 ACPI(GPUEco=0) -> 启 NVIDIA 服务
-    独显被占用时 EC 拒绝断电，所以"先杀进程"这步不能省。
-#>
+﻿
 
 [CmdletBinding()]
 param(
@@ -22,10 +8,6 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-
-# ---------------------------------------------------------------------------
-# ACPI 通道（\\.\ATKACPI）
-# ---------------------------------------------------------------------------
 
 $atkSource = @'
 using System;
@@ -98,7 +80,7 @@ function Write-Warn2($t){ Write-Host "  [!]  $t" -ForegroundColor Yellow }
 function Write-Err($t)  { Write-Host "  [X]  $t" -ForegroundColor Red }
 
 function Test-DgpuWorks {
-    # 只在需要时调用一次：探测独显会唤醒它，不能轮询
+    
     $r = & nvidia-smi --query-gpu=name --format=csv,noheader 2>&1 | Out-String
     return ($LASTEXITCODE -eq 0 -and $r -match 'NVIDIA')
 }
@@ -120,18 +102,7 @@ function Get-GpuProcesses {
 }
 
 function Set-GpuPreference {
-    <#
-        写全局显卡首选项，决定新启动的程序默认用哪块卡。
-
-        为什么必须做这一步：把独显"通电"只代表它可用，程序默认还是走
-        核显渲染。Windows 在程序启动时读
-        HKCU\...\UserGpuPreferences 里的 "GpuPreference" 值
-        （不带 exe 路径的那条 = 全局默认）：
-            1 = 省电（核显）   2 = 高性能（独显）
-        这与「设置 > 系统 > 屏幕 > 显示卡」写的是同一个位置。
-
-        注意：已经在运行的程序不会被改变，要重启该程序才生效。
-    #>
+    
     param([int]$Preference)
 
     $key = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
@@ -174,7 +145,7 @@ function Invoke-Switch {
 
     try {
         if ($Off) {
-            # ---- 关独显前的准备（G-Helper 的必需步骤）----
+            
             $procs = Get-GpuProcesses
             if ($procs.Count -gt 0) {
                 Write-Step "结束占用独显的程序：$(($procs | ForEach-Object { $_.Name }) -join '、')"
@@ -213,9 +184,9 @@ function Invoke-Switch {
 
         $works = Test-DgpuWorks
 
-        # ---- 关键一步：设置全局显卡首选项 ----
-        # 独显通电只代表"可用"，程序默认仍走核显渲染。要让程序真的用独显，
-        # 必须把全局首选项写成 高性能（2）；切集显时写回省电（1）。
+        
+        
+        
         if ($Off) {
             Write-Step "设置全局显卡首选项为 核显（省电）"
             [void](Set-GpuPreference -Preference 1)
@@ -243,15 +214,7 @@ function Invoke-Switch {
 }
 
 function Set-Mux {
-    <#
-        切换显示通路（MUX）：
-            0 = 集显模式（屏幕由核显输出）
-            1 = 标准混合（核显输出 + 独显渲染）
-            2 = 独显直连（屏幕直接由独显驱动，性能最高）
-
-        独显直连会把屏幕的物理输出切到独显上，切换过程黑屏数秒，
-        并且通常需要重启才能完全生效。这是硬件行为，不是缺陷。
-    #>
+    
     param([int]$Value)
 
     if (-not [Atk]::Open()) { Write-Err "打不开 \\.\ATKACPI"; return $false }
@@ -262,7 +225,7 @@ function Set-Mux {
             return $true
         }
 
-        # 安全闸：屏幕由独显驱动时绝不能关独显
+        
         if ($Value -eq 0 -and (Test-DgpuWorks)) {
             Write-Warn2 "独显当前在工作，不能直接切到集显输出"
             Write-Step "请先执行 'off' 关闭独显，再切集显模式"
@@ -287,10 +250,7 @@ function Set-Mux {
 }
 
 function Invoke-SwitchToDirect {
-    <#
-        切到独显直连：确保独显通电后把显示通路切到独显。
-        性能最高的一档，但会黑屏并需要重启。
-    #>
+    
     Write-Host ""
     Write-Host "  即将切到「独显直连」" -ForegroundColor Yellow
     Write-Host "  ----------------------------------------" -ForegroundColor DarkGray
@@ -321,7 +281,7 @@ function Invoke-SwitchToDirect {
 }
 
 function Invoke-SwitchToStandard {
-    # 从独显直连切回标准混合：写 MUX=1，需要重启
+    
     Write-Host ""
     Write-Host "  即将切回「标准混合」" -ForegroundColor Yellow
     Write-Host "  * 需要重启电脑才能完全生效" -ForegroundColor Yellow
@@ -333,7 +293,7 @@ function Invoke-SwitchToStandard {
         if ($mux -eq 1) {
             Write-Step "显示通路已经是标准混合"
         } else {
-            # 切回前必须确保独显通电，否则没有渲染设备
+            
             if (-not (Test-DgpuWorks)) {
                 Write-Step "先开启独显"
                 [void]([Atk]::Set($DEV_ECO, 0))
@@ -392,7 +352,7 @@ function Show-Status {
 }
 
 function Repair-Device {
-    # 重启显卡设备，让驱动重新接管（需要管理员）
+    
     $id = (& pnputil /enum-devices /class Display 2>&1 |
         Select-String -Pattern 'PCI\\VEN_10DE\S+' -AllMatches |
         ForEach-Object { $_.Matches.Value } | Select-Object -First 1)
@@ -533,8 +493,6 @@ function Show-Gui {
     $form.TopMost = $true
     [void]$form.ShowDialog()
 }
-
-# ---------------------------------------------------------------------------
 
 Write-Host ""
 Write-Host "  华硕显卡热切换" -ForegroundColor White

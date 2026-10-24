@@ -1,25 +1,9 @@
-﻿#Requires -Version 5.1
-<#
-    GPUSwitch —— 华硕显卡热切换 + 资源监视
-    UI 与位置参照 G-Helper：窄长窗口停靠右下角，深色卡片 + 描边模式按钮。
-
-    零依赖：只用 Windows 自带的 PowerShell + WinForms。
-
-    关于"切集显后独显从设备管理器消失"：
-    那是 EC 真的给独显断了电（省电模式的本质，G-Helper 的集显模式一样）。
-    但本程序**不会**再去杀占用独显的进程、也不停 NVIDIA 服务——
-    那些是早期版本的粗暴做法，会让驱动来不及优雅卸载，进而出现
-    NVIDIA App 报"没有 N 卡"的状态。现在只做干净的 ACPI 切换。
-#>
+﻿
 
 [CmdletBinding()]
 param([switch]$Minimized)
 
 $ErrorActionPreference = 'Continue'
-
-# ===========================================================================
-# ACPI
-# ===========================================================================
 
 $atkSource = @'
 using System;
@@ -64,12 +48,7 @@ if (-not ('Atk' -as [type])) { Add-Type -TypeDefinition $atkSource -ErrorAction 
 $DEV_ECO = [uint32]0x00090020
 $DEV_MUX = [uint32]0x00090016
 
-# 核显 LUID（Intel Graphics）。启动时自动探测。
 $script:IgpuLuid = $null
-
-# ===========================================================================
-# 硬件
-# ===========================================================================
 
 function Invoke-Acpi {
     param([scriptblock]$Body)
@@ -93,7 +72,7 @@ function Set-GpuPreference {
 }
 
 function Detect-IgpuLuid {
-    # 从 GPU Adapter Memory 计数器里找"没有独立显存"的那块 = 核显
+    
     try {
         $s = (Get-Counter '\GPU Adapter Memory(*)\Dedicated Usage' -ErrorAction Stop).CounterSamples
         $zero = $s | Where-Object { $_.CookedValue -eq 0 }
@@ -106,10 +85,6 @@ function Detect-IgpuLuid {
     } catch { }
     return '0x00000000_0x0001111f'
 }
-
-# ===========================================================================
-# 资源监视
-# ===========================================================================
 
 function Get-Stats {
     $r = @{ Cpu = 0; RamUsed = 0; RamTotal = 0; Dgpu = $null; Igpu = 0
@@ -125,7 +100,7 @@ function Get-Stats {
         $r.Cpu = [math]::Round((Get-Counter '\Processor(_Total)\% Processor Time' -ErrorAction Stop).CounterSamples[0].CookedValue, 0)
     } catch { }
 
-    # 核显：按 LUID 取最忙引擎
+    
     try {
         if (-not $script:IgpuLuid) { $script:IgpuLuid = Detect-IgpuLuid }
         $s = (Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples |
@@ -133,7 +108,7 @@ function Get-Stats {
         if ($s) { $r.Igpu = [math]::Round(($s | Measure-Object CookedValue -Maximum).Maximum, 0) }
     } catch { }
 
-    # 独显（没通电就跳过，避免唤醒它）
+    
     if (Test-DgpuWorks) {
         $out = & nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>&1
         $p = ($out | Select-Object -First 1) -split ','
@@ -144,16 +119,12 @@ function Get-Stats {
         }
     }
 
-    # CPU 温度走华硕 ACPI
+    
     $t = Invoke-Acpi { [Atk]::Get([uint32]0x00120094) }
     if ($null -ne $t -and $t -gt 0 -and $t -lt 120) { $r.Temp = $t }
 
     return $r
 }
-
-# ===========================================================================
-# 切换（干净版：只写 ACPI + 首选项，不杀进程不停服务）
-# ===========================================================================
 
 function Switch-Eco {
     param([bool]$Off, [scriptblock]$Log)
@@ -195,10 +166,6 @@ function Switch-Mux {
     return $true
 }
 
-# ===========================================================================
-# 界面
-# ===========================================================================
-
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -215,7 +182,7 @@ $C_CYAN   = [System.Drawing.Color]::FromArgb(0, 163, 238)
 $C_ORANGE = [System.Drawing.Color]::FromArgb(230, 126, 34)
 $C_PURPLE = [System.Drawing.Color]::FromArgb(130, 130, 165)
 
-$W = 392   # 窗口宽（对齐 G-Helper 的窄长条）
+$W = 392   
 
 function New-Card {
     param($Parent, $Title, $Y, $Height, $ShowTitle = $true)
@@ -311,7 +278,6 @@ function Set-Stat {
     $Stat.Fill.Width = [int]($Stat.Max * $p / 100)
 }
 
-# --- 窗口 ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'GPUSwitch'
 $form.ClientSize = New-Object System.Drawing.Size($W, 600)
@@ -326,7 +292,6 @@ $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $form.Location = New-Object System.Drawing.Point(
     ($wa.Right - $form.Width - 6), ($wa.Bottom - $form.Height - 6))
 
-# --- 卡片 1：当前状态 ---
 $card1 = New-Card $form '' 6 88 $false
 $lblModel = New-Object System.Windows.Forms.Label
 $lblModel.Text = '读取中…'
@@ -352,14 +317,12 @@ $lblInfo.Location = New-Object System.Drawing.Point(10, 60)
 $lblInfo.Size = New-Object System.Drawing.Size(344, 22)
 $card1.Controls.Add($lblInfo)
 
-# --- 卡片 2：资源监视 ---
 $card2 = New-Card $form '资源监视' 100 148
 $statDgpu = New-Stat $card2 '独显 GPU' 26 $C_GREEN
 $statIgpu = New-Stat $card2 '核显 GPU' 56 $C_CYAN
 $statRam  = New-Stat $card2 '内存'     86 ([System.Drawing.Color]::FromArgb(224, 163, 46))
 $statCpu  = New-Stat $card2 'CPU'     116 ([System.Drawing.Color]::FromArgb(56, 178, 107))
 
-# --- 卡片 3：显卡模式 ---
 $card3 = New-Card $form '显卡模式' 254 132
 $script:ModeBtns = @()
 $bw = 112
@@ -404,7 +367,6 @@ $ModeBtns += New-ModeBtn $card3 '标准混合' 8 80 168 $C_PURPLE {
 }
 $ModeBtns += New-ModeBtn $card3 '刷新状态' 184 80 168 $C_BORDER { Update-Ui }
 
-# --- 卡片 4：日志与操作 ---
 $card4 = New-Card $form '' 394 200 $false
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Multiline = $true
@@ -467,10 +429,6 @@ $btnHide.ForeColor = $C_DIM
 $btnHide.Add_Click({ $form.Hide() })
 $card4.Controls.Add($btnHide)
 
-# ===========================================================================
-# 刷新
-# ===========================================================================
-
 function Update-Ui {
     try {
         $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
@@ -524,7 +482,6 @@ $form.Add_Shown({
     Update-Ui
 })
 
-# 托盘图标：隐藏后还能叫回来
 $tray = New-Object System.Windows.Forms.NotifyIcon
 try {
     $tray.Icon = [System.Drawing.SystemIcons]::Application

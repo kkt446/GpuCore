@@ -1,15 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    GPUSwitch Python 版 —— 一键安装
-
-    1. 找到（或安装）Python 3.9+
-    2. 把 gpupanel 装到 %LOCALAPPDATA%\GPUSwitch\app
-    3. 生成启动器 + 桌面/开始菜单快捷方式
-    4. 验证能起来
-
-    用法：
-        powershell -ExecutionPolicy Bypass -File install-py.ps1
-#>
+﻿
 
 [CmdletBinding()]
 param([switch]$NoShortcut, [switch]$Uninstall)
@@ -42,7 +31,6 @@ Write-Host ""
 Write-Host "  GPUSwitch (Python 版) - 安装" -ForegroundColor White
 Write-Host "  ----------------------------------------" -ForegroundColor DarkGray
 
-# --- 1. 找 Python ---
 Line "1/4 查找 Python"
 $python = $null
 $candidates = @()
@@ -84,14 +72,12 @@ if (-not $python) {
 }
 Ok "Python: $python  ($(& $python --version))"
 
-# --- 2. 复制文件 ---
 Line "2/4 安装到 $AppDir"
 if (Test-Path $AppDir) { Remove-Item $AppDir -Recurse -Force }
 New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 Copy-Item (Join-Path $SourceDir 'gpupanel') $AppDir -Recurse -Force
 Ok "已复制 gpupanel"
 
-# --- 3. 启动器 ---
 Line "3/4 生成启动器"
 $pythonw = Join-Path (Split-Path $python -Parent) 'pythonw.exe'
 if (-not (Test-Path $pythonw)) { $pythonw = $python }
@@ -137,7 +123,6 @@ if (-not $NoShortcut) {
     } catch { Warn2 "创建快捷方式失败: $($_.Exception.Message)" }
 }
 
-# --- 4. 验证 ---
 Line "4/4 验证"
 Push-Location $AppDir
 try {

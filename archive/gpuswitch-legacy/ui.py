@@ -1,11 +1,3 @@
-"""Tkinter 面板：卡片式布局 + 自绘按钮/进度条，走 G-Helper 风格。
-
-结构（自上而下）：
-    1. 标题卡片   型号 / 当前显卡 / GPU 占用
-    2. 占用卡片   GPU、CPU、内存 三路实时占用
-    3. 显卡模式卡片  每个模式一个大按钮，当前模式高亮描边
-    4. 状态卡片   最近一次操作结果 + 快捷入口
-"""
 
 from __future__ import annotations
 
@@ -26,7 +18,6 @@ from .paths import is_windows
 
 logger = log.get(__name__)
 
-# --- 配色（对齐 G-Helper 深色主题）---
 BG = "#191919"
 CARD = "#202020"
 CARD_BORDER = "#2B2B2B"
@@ -53,12 +44,10 @@ _scale = 1.0
 
 
 def prepare_dpi() -> float:
-    """开启 DPI 感知并返回缩放系数（在创建 Tk 之前调用）。"""
     global _scale
     if is_windows():
         try:
             user32 = ctypes.WinDLL("user32")
-            # PER_MONITOR_AWARE_V2
             try:
                 user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
             except Exception:
@@ -75,21 +64,13 @@ def prepare_dpi() -> float:
 
 
 def px(value: float) -> int:
-    """把设计稿像素换算成实际像素。"""
     return int(round(value * _scale))
 
 
 def font(size: int, bold: bool = False) -> tuple:
     return (FONT_FAMILY, -px(size), "bold" if bold else "normal")
 
-
-# ---------------------------------------------------------------------------
-# 小组件
-# ---------------------------------------------------------------------------
-
-
 class Card(tk.Frame):
-    """带标题的卡片容器。"""
 
     def __init__(self, master, title: str = "", **kwargs):
         super().__init__(master, bg=CARD, highlightbackground=CARD_BORDER,
@@ -115,7 +96,6 @@ class Card(tk.Frame):
 
 
 class Bar(tk.Frame):
-    """一条占用进度条：左侧标签、右侧数值、下方圆角进度。"""
 
     def __init__(self, master, label: str, color: str, width: int = 100):
         super().__init__(master, bg=CARD)
@@ -166,7 +146,6 @@ class Bar(tk.Frame):
 
 
 class ToggleButton(tk.Frame):
-    """参考图里的模式按钮：标题 + 副标题，选中时蓝色描边。"""
 
     def __init__(
         self,
@@ -176,7 +155,6 @@ class ToggleButton(tk.Frame):
         command: Optional[Callable[[], None]] = None,
         height: int = 58,
     ):
-        # 外层负责 1px 描边，内层负责底色，避免 layout propagation 把描边算掉
         super().__init__(
             master, bg=BTN_BORDER, highlightthickness=0, bd=0, cursor="hand2",
         )
@@ -200,7 +178,6 @@ class ToggleButton(tk.Frame):
         self.configure(height=px(height))
         self.pack_propagate(False)
 
-    # --- 交互 ---
     def _on_click(self, _event=None):
         if self._enabled and self.command:
             self.command()
@@ -219,9 +196,7 @@ class ToggleButton(tk.Frame):
         self.title.configure(bg=bg, fg=fg)
         self.sub.configure(bg=bg, fg=sub_fg)
 
-    # --- 状态 ---
     def set_selected(self, selected: bool) -> None:
-        """选中 = 当前正在使用的显卡：蓝色描边 + 高亮文字。"""
         self._selected = selected
         if selected:
             self._paint(BTN_BG, ACCENT, TEXT, ACCENT)
@@ -249,7 +224,6 @@ class ToggleButton(tk.Frame):
 
 
 class FlatButton(tk.Label):
-    """紧凑的扁平按钮。"""
 
     def __init__(self, master, text: str, command=None, bg: str = BTN_BG, fg: str = TEXT_DIM):
         super().__init__(
@@ -262,14 +236,7 @@ class FlatButton(tk.Label):
         self.bind("<Enter>", lambda _e: self.configure(bg=BTN_BG_HOVER))
         self.bind("<Leave>", lambda _e: self.configure(bg=self._base_bg))
 
-
-# ---------------------------------------------------------------------------
-# 主面板
-# ---------------------------------------------------------------------------
-
-
 class GpuPanel:
-    """组装并维护面板。"""
 
     def __init__(
         self,
@@ -302,7 +269,6 @@ class GpuPanel:
         self._message_kind = "info"
         self._pending: List[tuple] = []
 
-    # ---- 构建 ----
 
     def build(self) -> None:
         root = self.root
@@ -330,7 +296,6 @@ class GpuPanel:
         self.refresh_static()
         self.refresh_hardware()
 
-        # 内容自适应高度：不写死尺寸，避免底部留下大片空白
         root.update_idletasks()
         natural = wrap.winfo_reqheight() + px(16)
         configured = px(int(self.config.get("window_height", 0) or 0))
@@ -355,7 +320,6 @@ class GpuPanel:
         y = max(0, min(y, screen_h - self.height))
         self.root.geometry(f"{self.width}x{self.height}+{x}+{y}")
 
-    # ---- 卡片 1：标题与当前显卡 ----
 
     def _build_header(self, parent: tk.Frame) -> None:
         card = Card(parent)
@@ -388,7 +352,6 @@ class GpuPanel:
         )
         self.gpu_util_label.pack(anchor="e")
 
-    # ---- 卡片 2：三路占用 ----
 
     def _build_usage(self, parent: tk.Frame) -> None:
         card = Card(parent, "实时占用")
@@ -405,7 +368,6 @@ class GpuPanel:
         self.ram_bar = Bar(body, "内存占用", BAR_RAM, width=300)
         self.ram_bar.pack(fill="x")
 
-    # ---- 卡片 3：显卡模式 ----
 
     def _build_modes(self, parent: tk.Frame) -> None:
         card = Card(parent, "显卡模式")
@@ -425,7 +387,6 @@ class GpuPanel:
         self.mode_hint_label.pack(fill="x", pady=(px(7), 0))
 
     def rebuild_mode_buttons(self) -> None:
-        """按显卡列表重建模式按钮（3 列网格）。"""
         for child in self._mode_grid.winfo_children():
             child.destroy()
         self._buttons.clear()
@@ -447,7 +408,6 @@ class GpuPanel:
 
     @staticmethod
     def _short_name(adapter: GpuAdapter) -> str:
-        """把长型号压缩到按钮能放下的长度。"""
         name = adapter.name
         for noise in (
             "NVIDIA ", "AMD ", "Intel(R) ", "Laptop GPU", "GPU", "(R)", "(TM)",
@@ -478,12 +438,10 @@ class GpuPanel:
             return False
 
     def _mode_hint(self) -> str:
-        """明确告诉用户这个按钮到底会做什么，避免"点了没反应"的困惑。"""
         if self._hardware_available():
             return "点一下即热切换：硬件级切换显卡供电/显示通路，立刻生效、不用重启程序"
         return "本机无厂商硬件通道：只能改显卡偏好，对被点的程序在下次启动时生效"
 
-    # ---- 卡片 3.5：硬件锁定（防其它工具改回去）----
 
     def _build_hardware(self, parent: tk.Frame) -> None:
         if self.lock is None:
@@ -555,7 +513,6 @@ class GpuPanel:
             self._lock_grid.grid_columnconfigure(column, weight=1, uniform="lock")
 
     def refresh_hardware(self) -> None:
-        """刷新硬件状态与锁定高亮。"""
         if self.lock is None or not hasattr(self, "hw_state_label"):
             return
         try:
@@ -583,8 +540,6 @@ class GpuPanel:
             text = f"🔒 已锁定 · {text}"
         self.hw_state_label.configure(text=text, fg=(ACCENT if locked else TEXT_DIM))
 
-        # 锁定中时高亮"你锁的那个模式"，否则高亮硬件当前的模式。
-        # 两者可能不同：比如锁定「独显常驻」只管独显通电，显示通路可以是别的。
         highlight = mode_id if locked else state.mode_id
         for mid, button in self._lock_buttons.items():
             button.set_selected(mid == highlight)
@@ -609,7 +564,6 @@ class GpuPanel:
         if last is not None and getattr(last, "kind", "") in ("drift", "restored", "failed"):
             self.set_message(last.message, "warn" if last.kind != "restored" else "ok")
 
-    # ---- 卡片 4：状态与操作 ----
 
     def _build_footer(self, parent: tk.Frame) -> None:
         card = Card(parent)
@@ -631,7 +585,6 @@ class GpuPanel:
             )
         FlatButton(row, "隐藏", command=self.hide).pack(side="right", padx=px(3))
 
-    # ---- 刷新 ----
 
     def reload_adapters(self) -> None:
         if not self.on_refresh:
@@ -647,15 +600,11 @@ class GpuPanel:
             self.set_message(f"重新检测失败：{exc}", "error")
 
     def refresh_static(self) -> None:
-        """显卡名称/类型/按钮高亮等不随每秒变化的部分。"""
         from .gpu import describe_renderer
 
-        # 用"谁在实际渲染"判断当前显卡：混合模式下所有画面都输出到核显，
-        # 只有渲染负载能说明到底是谁在干活
         current = describe_renderer(self.adapters)
         self._current_key = current.key if current else None
 
-        # 硬件可用时，以硬件状态判断"当前在用哪块卡"，比看谁在驱动显示器更准
         hardware_active: Optional[str] = None
         if self._hardware_available():
             try:
@@ -667,8 +616,6 @@ class GpuPanel:
 
         if current:
             self.gpu_name_label.configure(text=current.name)
-            # 这一行描述的是"这块显卡现在是什么状态"，不能把独显的通电状态
-            # 贴到核显的名字下面，否则会出现"Intel Graphics / 独显已通电"这种矛盾
             type_text = current.kind_label
             if current.kind == TYPE_DISCRETE and hardware_active is not None:
                 type_text = (
@@ -691,8 +638,6 @@ class GpuPanel:
             button = self._buttons.get(adapter.key)
             if button is None:
                 continue
-            # 当前正在使用的显卡：蓝框高亮并保持可点（点了会提示"无需切换"），
-            # 这样既和参考图一致，也不会让人以为按钮坏了
             button.set_selected(adapter.key == self._current_key)
             button.set_enabled(True)
 
@@ -707,7 +652,6 @@ class GpuPanel:
             else:
                 self.usage_card.set_value("")
 
-        # 只有一块可切换显卡时给出说明；已有操作反馈时不覆盖
         switchable = [a for a in self.adapters if a.kind != TYPE_VIRTUAL]
         if len(switchable) <= 1 and not self._message:
             self._message = (
@@ -720,7 +664,6 @@ class GpuPanel:
         self._render_message()
 
     def tick(self) -> None:
-        """每秒刷新指标。"""
         self.drain_messages()
         try:
             self.collector.apply_to_adapters(self.adapters)
@@ -760,17 +703,14 @@ class GpuPanel:
         except Exception as exc:
             logger.debug("面板刷新异常: %s", exc)
 
-        # 硬件锁定状态变化不需要每秒刷，但被抢回时要及时反映出来
         self._hw_tick = getattr(self, "_hw_tick", 0) + 1
         if self._hw_tick % 3 == 0:
             try:
                 self.refresh_hardware()
-                # 渲染方会随负载变化，隔几秒重算一次高亮
                 self.refresh_static()
             except Exception as exc:
                 logger.debug("硬件状态刷新异常: %s", exc)
 
-    # ---- 消息 ----
 
     def set_message(self, text: str, kind: str = "info") -> None:
         self._message = text
@@ -778,7 +718,6 @@ class GpuPanel:
         self._render_message()
 
     def queue_message(self, text: str, kind: str = "info") -> None:
-        """线程安全的转达：守护线程不能直接碰 Tk 控件。"""
         self._pending.append((text, kind))
 
     def drain_messages(self) -> None:
@@ -802,7 +741,6 @@ class GpuPanel:
             return
         self.message_label.configure(text=self._message, fg=color)
 
-    # ---- 显隐 ----
 
     def show(self) -> None:
         self.refresh_static()

@@ -1,8 +1,3 @@
-"""锁定守护的逻辑自检。
-
-不碰真实硬件：用一个可编程的假后端模拟"别的程序改动了显卡状态"，
-验证守护线程真的能发现并抢回来，并且不会越权纠正用户手动改的部分。
-"""
 
 from __future__ import annotations
 
@@ -14,7 +9,7 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gpuswitch.hardware import (  # noqa: E402
+from gpuswitch.hardware import (
     ECO_OFF,
     ECO_ON,
     HardwareBackend,
@@ -22,13 +17,12 @@ from gpuswitch.hardware import (  # noqa: E402
     HardwareResult,
     HardwareState,
 )
-from gpuswitch.lock import GpuLock  # noqa: E402
+from gpuswitch.lock import GpuLock
 
 MUX_IGPU, MUX_STANDARD, MUX_ULTIMATE = 0, 1, 2
 
 
 class FakeHardware(HardwareBackend):
-    """可编程假后端：状态可被外部随意篡改，用来模拟厂商工具。"""
 
     name = "fake"
     description = "测试用"
@@ -61,10 +55,6 @@ class FakeHardware(HardwareBackend):
         return "standard"
 
     def modes(self) -> List[HardwareMode]:
-        # 与真实 ASUS 后端的定义保持一致：
-        #   dgpu_on 只声明 eco（不管显示通路）
-        #   dgpu_off 只声明 eco
-        #   ultimate / standard 同时声明 eco 与 mux
         return [
             HardwareMode("dgpu_on", "独显常驻", "测试", eco=ECO_ON),
             HardwareMode("dgpu_off", "关闭独显", "测试", eco=ECO_OFF),
@@ -87,7 +77,6 @@ class FakeHardware(HardwareBackend):
         return HardwareResult(True, f"fake applied {mode.label}", changed=changed)
 
     def sabotage(self, eco: Optional[int] = None, mux: Optional[int] = None) -> None:
-        """模拟奥创/G-Helper/厂商服务偷偷改动显卡状态。"""
         with self.lock:
             if eco is not None:
                 self.eco = eco
@@ -128,19 +117,17 @@ def main() -> int:
     print("锁定守护逻辑自检（假后端，不碰真实硬件）")
     print("=" * 70)
 
-    # ---------- 1. 只有供电被改：应抢回 ----------
     case.section("1. 锁定「独显常驻」后，别的程序把独显关掉（切回核显）")
     result = lock.enable(lock.find_mode("dgpu_on"))
     case.check(result.ok, f"锁定建立成功（{result.message}）")
     lock.start(0.3)
     case.check(lock.running, "守护线程已启动")
 
-    hw.sabotage(eco=ECO_OFF)          # 正是"打完游戏被切回核显"的场景
+    hw.sabotage(eco=ECO_OFF)
     ok = wait_until(lambda: hw.read_state().eco == ECO_ON)
     case.check(ok, f"被切回核显后自动抢回独显（当前 eco={hw.read_state().eco}）")
     case.check(lock.restore_count >= 1, f"抢回计数 +1（当前 {lock.restore_count}）")
 
-    # ---------- 2. 用户手动改显示通路：不该被顶回去 ----------
     case.section("2. 用户手动把显示通路切到独显直连（不是被篡改）")
     hw.sabotage(mux=MUX_ULTIMATE)
     time.sleep(1.2)
@@ -153,7 +140,6 @@ def main() -> int:
         hw.read_state().eco == ECO_ON, "独显仍然保持通电"
     )
 
-    # ---------- 3. 锁定"连显示通路一起管"的模式：应抢回 ----------
     case.section("3. 改成锁定「标准混合」（eco+mux 都管），再篡改 MUX")
     lock.disable()
     result = lock.enable(lock.find_mode("standard"))
@@ -167,7 +153,6 @@ def main() -> int:
     state = hw.read_state()
     case.check(ok, f"供电与显示通路都被抢回（eco={state.eco} mux={state.mux}）")
 
-    # ---------- 4. 反复篡改：每次都应抢回 ----------
     case.section("4. 反复篡改 5 次，每次都应在 3 秒内被抢回")
     caught = 0
     for index in range(5):
@@ -181,7 +166,6 @@ def main() -> int:
         lock.restore_count >= 5, f"抢回计数累计正确（{lock.restore_count} 次）"
     )
 
-    # ---------- 5. 解锁后不再干预 ----------
     case.section("5. 解锁后篡改，守护必须停止干预")
     lock.disable()
     count_before = lock.restore_count
@@ -195,7 +179,6 @@ def main() -> int:
         lock.restore_count == count_before, "解锁后抢回计数不再增长"
     )
 
-    # ---------- 6. 写入后校验 ----------
     case.section("6. 固件拒绝写入时应报错而不是假装成功")
 
 
@@ -205,7 +188,7 @@ def main() -> int:
 
     stubborn = StubbornHardware()
     stubborn_lock = GpuLock(stubborn)
-    stubborn_lock._satisfied = GpuLock._satisfied  # 用真实校验逻辑
+    stubborn_lock._satisfied = GpuLock._satisfied
     res = stubborn_lock.enable(stubborn_lock.find_mode("dgpu_off"))
     case.check(not res.ok, f"校验不通过时返回失败（{res.message}）")
 

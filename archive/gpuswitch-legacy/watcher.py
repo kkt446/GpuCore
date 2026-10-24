@@ -1,16 +1,3 @@
-"""按程序指定显卡（通用方案，任何 Windows 笔电都能用）。
-
-参考思路来自 JasonHu051219/GPUSwitch：Windows 的显卡归属在**进程创建时**由
-系统读取 `HKCU\\...\\UserGpuPreferences` 决定，所以想"指定某个程序用哪块卡"，
-必须在它初始化图形之前把偏好写好。两种做法：
-
-  1. 由本程序启动目标程序（最可靠，零风险）：先写偏好，再 CreateProcess
-  2. 拦截系统里新出现的进程（通用，但要重启该进程才生效）：
-     用 WMI `Win32_Process` 的 `Creation` 事件感知启动 -> 写偏好 ->
-     结束并重启该进程（可选，会丢失未保存数据，默认关闭）
-
-本模块提供这两条路，并维护一份"程序 -> 期望显卡"的名单。
-"""
 
 from __future__ import annotations
 
@@ -29,9 +16,9 @@ from . import log
 from .adapter import PREF_HIGH_PERFORMANCE, PREF_POWER_SAVING
 from .paths import is_windows
 
-try:  # 可选依赖：装了更省事，没装走 Win32 原生实现
-    import psutil  # type: ignore
-except Exception:  # pragma: no cover
+try:
+    import psutil
+except Exception:
     psutil = None
 
 logger = log.get(__name__)
@@ -39,7 +26,6 @@ logger = log.get(__name__)
 USER_PREFS_SUBKEY = r"Software\Microsoft\DirectX\UserGpuPreferences"
 ASK_MARK = "ASK"
 
-# 不希望被拦截/重启的系统关键进程
 _PROTECTED = {
     "system", "system idle process", "registry", "memory compression",
     "csrss.exe", "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe",
@@ -53,12 +39,11 @@ _PROTECTED = {
 
 @dataclass
 class LaunchRule:
-    """一条"按程序指定显卡"的规则。"""
 
     path: str
-    preference: int = 0          # 0 系统默认 / 1 省电(集显) / 2 高性能(独显)
-    ask: bool = False            # 启动时询问
-    restart: bool = False        # 拦截到启动后是否自动重启该进程
+    preference: int = 0
+    ask: bool = False
+    restart: bool = False
 
     @property
     def name(self) -> str:
@@ -92,18 +77,7 @@ class LaunchRule:
             PREF_HIGH_PERFORMANCE: "高性能（独显）",
         }.get(self.preference, "系统默认")
 
-
-# ---------------------------------------------------------------------------
-# 注册表读写
-# ---------------------------------------------------------------------------
-
-
 def _open_prefs(write: bool):
-    """打开 UserGpuPreferences 键。
-
-    读不到/没权限时返回 None，绝不抛异常——调用方需要区分
-    "没有这条偏好"和"读不了注册表"，而不是崩掉。
-    """
     import winreg
 
     access = winreg.KEY_READ | (winreg.KEY_WRITE if write else 0)
@@ -121,7 +95,6 @@ def _open_prefs(write: bool):
     if not write:
         return None
 
-    # 键不存在时逐级创建
     try:
         parent = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER, r"Software\Microsoft\DirectX", 0, winreg.KEY_WRITE
@@ -139,7 +112,6 @@ def _open_prefs(write: bool):
 
 
 def registry_writable() -> bool:
-    """当前环境能否写注册表偏好。受限环境（沙箱/只读令牌）会返回 False。"""
     if not is_windows():
         return False
     import winreg
@@ -156,14 +128,12 @@ def registry_writable() -> bool:
 
 
 def read_all_preferences() -> Dict[str, str]:
-    """读出注册表里所有程序级显卡偏好。"""
     if not is_windows():
         return {}
     import winreg
 
     result: Dict[str, str] = {}
     try:
-        # 用 with 管理句柄：winreg.PyHKEY 只有 Close()，写 .close() 会 AttributeError
         with _open_prefs(write=False) as key:
             if key is None:
                 return result
@@ -182,7 +152,6 @@ def read_all_preferences() -> Dict[str, str]:
 
 
 def write_preference(path: str, preference: int, ask: bool = False) -> bool:
-    """写入某个程序的显卡偏好。返回是否成功。"""
     if not is_windows():
         return False
     import winreg
@@ -225,21 +194,13 @@ def delete_preference(path: str) -> bool:
 
 
 def parse_preference(value: str) -> tuple:
-    """解析 'GpuPreference=2;ASK' -> (2, True)。"""
     if not value:
         return (0, False)
     match = re.search(r"GpuPreference\s*=\s*(\d+)", value, re.I)
     pref = int(match.group(1)) if match else 0
     return (pref, ASK_MARK in value.upper())
 
-
-# ---------------------------------------------------------------------------
-# 启动器：最可靠的按程序指定显卡方式
-# ---------------------------------------------------------------------------
-
-
 def launch_with_gpu(rule: LaunchRule, args: Optional[List[str]] = None) -> bool:
-    """先写好偏好再启动程序，确保它一开始就用对显卡。"""
     if not write_preference(rule.path, rule.preference, ask=False):
         logger.warning("偏好写入失败，仍尝试启动: %s", rule.path)
     try:
@@ -257,18 +218,7 @@ def launch_with_gpu(rule: LaunchRule, args: Optional[List[str]] = None) -> bool:
         logger.exception("启动失败 %s: %s", rule.path, exc)
         return False
 
-
-# ---------------------------------------------------------------------------
-# 进程拦截
-# ---------------------------------------------------------------------------
-
-
 class ProcessWatcher:
-    """监听新进程，在它加载图形之前写好显卡偏好。
-
-    WMI 的 `Win32_Process` Creation 事件是秒级的，比轮询省 CPU；
-    拿不到 WMI 时自动退化为轮询快照。
-    """
 
     def __init__(
         self,
@@ -283,10 +233,9 @@ class ProcessWatcher:
         self._thread: Optional[threading.Thread] = None
         self._cooldowns: Dict[str, float] = {}
         self._known: Dict[str, float] = {}
-        self.mode = ""          # wmi / poll
+        self.mode = ""
         self.caught = 0
 
-    # ---- 生命周期 ----
 
     def start(self) -> bool:
         if not is_windows():
@@ -308,14 +257,8 @@ class ProcessWatcher:
     def running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
-    # ---- 主循环 ----
 
     def _run(self) -> None:
-        """先试 WMI 事件监听；不可用就退化为轮询。
-
-        注意：WMI 线程"启动成功"不等于"能收到事件"——watch_for 本身就可能抛
-        异常。所以这里要求它先成功建立监听（state='ok'）才算数，否则老实轮询。
-        """
         if self._run_wmi():
             return
         logger.info("WMI 进程监听不可用，退化为轮询（每 1.5 秒）")
@@ -323,8 +266,8 @@ class ProcessWatcher:
 
     def _run_wmi(self) -> bool:
         try:
-            import pythoncom  # type: ignore
-            import wmi  # type: ignore
+            import pythoncom
+            import wmi
         except Exception as exc:
             logger.debug("缺少 WMI 模块: %s", exc)
             return False
@@ -364,7 +307,6 @@ class ProcessWatcher:
         worker = threading.Thread(target=loop, name="proc-watch-wmi", daemon=True)
         worker.start()
 
-        # 等它真的建立起监听，而不是只看线程有没有活着
         deadline = time.time() + 8.0
         while time.time() < deadline:
             if state["mode"] == "ok":
@@ -379,7 +321,6 @@ class ProcessWatcher:
 
         self.mode = "wmi"
         self._wmi_thread = worker
-        # 监听生效期间主线程在这里等待；一旦监听线程死了就返回失败并退化
         while not self._stop.is_set() and worker.is_alive():
             time.sleep(0.5)
         if not self._stop.is_set() and not worker.is_alive():
@@ -390,7 +331,6 @@ class ProcessWatcher:
 
     def _run_poll(self) -> None:
         self.mode = "poll"
-        # 先建立基线，避免把已有进程当成"新启动"
         self._baseline()
         while not self._stop.is_set():
             try:
@@ -411,19 +351,13 @@ class ProcessWatcher:
             if path or name:
                 self._handle(path, pid, name)
 
-    # ---- 命中处理 ----
 
     def _handle(self, exe_path: Optional[str], pid: int, name_hint: str = "") -> None:
-        """处理一个进程：能拿到全路径就按路径匹配，拿不到就按进程名兜底。
-
-        有些进程（尤其是 System32 里的）不允许查询镜像路径，如果直接跳过，
-        受监控的程序就永远不会被拦截。
-        """
         raw = (exe_path or "").strip()
         if raw:
             path = str(Path(raw))
         elif name_hint:
-            path = ""          # 只有名字，无法写注册表偏好，但还能匹配规则
+            path = ""
         else:
             return
 
@@ -442,7 +376,6 @@ class ProcessWatcher:
         self._cooldowns[rule.path.lower()] = now
         self.caught += 1
 
-        # 关键动作：在进程初始化图形之前把偏好写进去（写规则里记录的完整路径）
         write_preference(rule.path, rule.preference, ask=False)
         logger.info(
             "拦截到 %s（pid %d，%s），已写入偏好「%s」",
@@ -474,7 +407,6 @@ class ProcessWatcher:
         return None
 
     def _match_by_name(self, name: str) -> Optional[LaunchRule]:
-        """按可执行文件名匹配（拿不到全路径时的兜底）。"""
         if not name:
             return None
         try:
@@ -489,10 +421,6 @@ class ProcessWatcher:
 
 
 def _iter_processes_win32():
-    """不依赖 psutil 的进程枚举（CreateToolhelp32Snapshot + QueryFullProcessImageNameW）。
-
-    psutil 是可选的，但这个功能不能因此失效，所以内置一份原生实现。
-    """
     import ctypes
     import ctypes.wintypes as wt
 
@@ -558,7 +486,6 @@ def _iter_processes_win32():
 
 
 def _iter_processes():
-    """枚举 (pid, exe 全路径, 进程名)。优先 psutil，缺失时用 Win32 原生实现。"""
     if psutil is not None:
         try:
             for proc in psutil.process_iter(["pid", "name", "exe"]):
@@ -581,7 +508,6 @@ def _iter_processes():
 
 
 def _cmdline(pid: int) -> List[str]:
-    """取进程命令行（用于重启时保留参数）。没有 psutil 时返回空，退化为按路径启动。"""
     if psutil is None:
         return []
     try:
@@ -591,7 +517,6 @@ def _cmdline(pid: int) -> List[str]:
 
 
 def is_running(path: str) -> bool:
-    """目标程序当前是否在运行。"""
     target = str(Path(path)).lower()
     wanted_name = Path(path).name.lower()
     for _pid, exe, name in _iter_processes():
@@ -603,12 +528,6 @@ def is_running(path: str) -> bool:
 
 
 def terminate_and_relaunch(path: str, cmdline: Optional[List[str]] = None) -> bool:
-    """结束所有同名进程并重新启动（偏好需在调用前写好）。
-
-    这是参考实现用的手段：进程启动后偏好来不及生效，只能重启一次。
-    会丢失未保存的数据，因此必须由用户显式确认。
-    优先用 psutil 优雅结束，没有 psutil 时退化为 taskkill。
-    """
     target = str(Path(path)).lower()
     name = Path(path).name
     terminated = 0
@@ -637,7 +556,6 @@ def terminate_and_relaunch(path: str, cmdline: Optional[List[str]] = None) -> bo
         if alive:
             psutil.wait_procs(alive, timeout=2)
     else:
-        # 没有 psutil 时用系统自带的 taskkill 兜底
         try:
             from .paths import run_capture
 
@@ -649,7 +567,7 @@ def terminate_and_relaunch(path: str, cmdline: Optional[List[str]] = None) -> bo
     if terminated == 0:
         logger.info("没有找到正在运行的 %s，直接启动", name)
 
-    time.sleep(1.0)  # 给系统时间释放图形句柄
+    time.sleep(1.0)
     try:
         if cmdline:
             subprocess.Popen(
@@ -658,7 +576,7 @@ def terminate_and_relaunch(path: str, cmdline: Optional[List[str]] = None) -> bo
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
         else:
-            os.startfile(path)  # type: ignore[attr-defined]
+            os.startfile(path)
         logger.info("已重启 %s", name)
         return True
     except Exception as exc:

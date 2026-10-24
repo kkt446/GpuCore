@@ -1,4 +1,3 @@
-"""入口：python -m gpuswitch"""
 
 import sys
 

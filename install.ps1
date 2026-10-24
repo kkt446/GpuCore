@@ -1,24 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    GpuCore（双芯）—— 一键安装
-
-    做什么：
-      1. 找到（必要时用 winget 装）带 tkinter 的 Python 3.9+
-      2. 把 gpucore 包复制到 %LOCALAPPDATA%\GpuCore\app
-      3. 生成启动器 + 桌面/开始菜单快捷方式
-      4. 跑一次自检，确认这台机器能用
-
-    用法：
-        powershell -ExecutionPolicy Bypass -File install.ps1
-        powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
-        powershell -ExecutionPolicy Bypass -File install.ps1 -NoShortcut
-
-    不需要管理员权限。不会安装任何驱动。
-
-    注意：本文件必须保存为 UTF-8 with BOM。
-          Windows PowerShell 5.1 在没有 BOM 时会按系统 ANSI 代码页读取，
-          中文注释会被解码坏掉并直接引发语法错误。
-#>
+﻿
 
 [CmdletBinding()]
 param(
@@ -30,12 +10,6 @@ $ErrorActionPreference = 'Stop'
 
 $SourceDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# --------------------------------------------------------------------------
-# 0. 从一个来源读品牌信息
-#    gpucore/branding.py 是唯一权威。以前这里把 GpuCore / 双芯 各硬写了一遍，
-#    哪天改了 branding.py 的 APP_NAME 而忘了改这里，安装目录和程序读配置的
-#    目录就会分叉（装到 A、去 B 找 config.json）。所以现读，不再抄。
-# --------------------------------------------------------------------------
 function Read-Branding {
     param([string]$Root)
     $path = Join-Path $Root 'gpucore\branding.py'
@@ -86,9 +60,6 @@ function Stop-RunningInstances {
     Start-Sleep -Milliseconds 400
 }
 
-# --------------------------------------------------------------------------
-# 卸载
-# --------------------------------------------------------------------------
 if ($Uninstall) {
     Line "卸载 $AppName"
 
@@ -125,9 +96,6 @@ Write-Host ""
 Write-Host "  $AppName ($AppNameCn) $AppVersion - 安装" -ForegroundColor White
 Write-Host "  ----------------------------------------" -ForegroundColor DarkGray
 
-# --------------------------------------------------------------------------
-# 1. 找 Python
-# --------------------------------------------------------------------------
 Line "1/5 查找 Python"
 
 $python = $null
@@ -179,9 +147,6 @@ if (-not $python) {
 Ok "Python: $python"
 Ok "版本: $(& $python --version 2>&1)"
 
-# --------------------------------------------------------------------------
-# 2. 复制文件
-# --------------------------------------------------------------------------
 Line "2/5 安装到 $AppDir"
 
 Stop-RunningInstances
@@ -193,9 +158,6 @@ Get-ChildItem $AppDir -Recurse -Directory -Filter '__pycache__' -ErrorAction Sil
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Ok "已复制 gpucore"
 
-# --------------------------------------------------------------------------
-# 3. 启动器
-# --------------------------------------------------------------------------
 Line "3/5 生成启动器"
 
 $pythonw = Join-Path (Split-Path $python -Parent) 'pythonw.exe'
@@ -224,9 +186,6 @@ $consoleBody = @(
 Set-Content -Path $ConsoleCmd -Value $consoleBody -Encoding ASCII
 Ok "调试启动器: $ConsoleCmd"
 
-# --------------------------------------------------------------------------
-# 4. 快捷方式
-# --------------------------------------------------------------------------
 if (-not $NoShortcut) {
     Line "4/5 创建快捷方式"
     try {
@@ -252,9 +211,6 @@ if (-not $NoShortcut) {
     Line "4/5 跳过快捷方式"
 }
 
-# --------------------------------------------------------------------------
-# 5. 自检
-# --------------------------------------------------------------------------
 Line "5/5 自检"
 Push-Location $AppDir
 try {

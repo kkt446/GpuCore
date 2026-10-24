@@ -1,17 +1,3 @@
-"""华硕专用面板。
-
-设计目标：不要再让"哪块卡在用"产生歧义。
-
-关键改动：**独显和核显的占用分开显示**。
-混合模式下两块卡同时在位，只报一个"GPU 占用"必然误导人——
-之前就是把核显的 29% 显示在独显的名字旁边，看起来像读错了。
-
-界面分四块：
-    1. 顶部：机型 + 当前模式（集显/标准/独显直连）+ 独显供电与显示通路
-    2. 显卡占用：独显、核显、显存、温度，各自独立成行
-    3. 显卡模式：集显模式 / 标准模式 / 独显直连 —— 点一下就是硬件切换
-    4. 系统与状态：CPU、内存、最近一次操作结果
-"""
 
 from __future__ import annotations
 
@@ -55,13 +41,12 @@ from .ui import (
 
 logger = log.get(__name__)
 
-BAR_DGPU = "#76B900"   # NVIDIA 绿
-BAR_IGPU = "#00A3EE"   # Intel 蓝
+BAR_DGPU = "#76B900"
+BAR_IGPU = "#00A3EE"
 BAR_TEMP = "#E5534B"
 
 
 class AsusPanel:
-    """华硕专用主面板。"""
 
     def __init__(
         self,
@@ -93,9 +78,6 @@ class AsusPanel:
         self._last_hw: dict = {}
         self._hw_tick = 0
 
-    # ------------------------------------------------------------------
-    # 构建
-    # ------------------------------------------------------------------
 
     def build(self) -> None:
         root = self.root
@@ -145,7 +127,6 @@ class AsusPanel:
         y = max(0, min(y, screen_h - self.height))
         self.root.geometry(f"{self.width}x{self.height}+{x}+{y}")
 
-    # ---- 1. 顶部：机型 + 当前模式 ----
 
     def _build_header(self, parent: tk.Frame) -> None:
         card = Card(parent)
@@ -178,7 +159,6 @@ class AsusPanel:
         )
         self.mux_label.pack(fill="x", padx=px(11), pady=(px(2), px(9)))
 
-    # ---- 2. 显卡占用：独显 / 核显 分开 ----
 
     def _build_usage(self, parent: tk.Frame) -> None:
         card = Card(parent, "显卡占用")
@@ -199,7 +179,6 @@ class AsusPanel:
         self.ram_bar = Bar(body, "内存占用", BAR_RAM, width=300)
         self.ram_bar.pack(fill="x")
 
-    # ---- 3. 模式按钮 ----
 
     def _build_modes(self, parent: tk.Frame) -> None:
         card = Card(parent, "显卡模式")
@@ -236,7 +215,6 @@ class AsusPanel:
         )
         self.mode_hint.pack(fill="x", pady=(px(6), 0))
 
-    # ---- 4. 状态与操作 ----
 
     def _build_footer(self, parent: tk.Frame) -> None:
         card = Card(parent)
@@ -258,22 +236,12 @@ class AsusPanel:
                        command=self._toggle_lock).pack(side="left", padx=px(3))
         FlatButton(row, "隐藏", command=self.hide).pack(side="right", padx=px(3))
 
-    # ------------------------------------------------------------------
-    # 数据刷新
-    # ------------------------------------------------------------------
 
     def _read_hw(self) -> dict:
-        """读硬件状态。
-
-        关键：**独显在不在系统里**才是状态的权威判据。
-        GPUEco 寄存器回读在本机型不可信（写 1 后读回仍是 0，但独显确实断电了），
-        早期版本就是因为信了它，界面状态全是错的。
-        """
         try:
             from .asusprobe import dgpu_device_present, nvidia_present
 
             present = nvidia_present()
-            # 设备是否报错（被断电后驱动没接管时会变成 Problem 状态）
             device_ok = dgpu_device_present()
             mux = self._acpi.get(0x00090016)
             eco_reg = self._acpi.get(0x00090020)
@@ -295,14 +263,12 @@ class AsusPanel:
 
     @staticmethod
     def _detect_mode(present: Optional[bool], mux: Optional[int], eco_reg: Optional[int]):
-        """用"独显在不在"判断模式，寄存器只作辅助。"""
         from .asusprobe import MUX_ULTIMATE, find_mode
 
         if present is False:
             return find_mode("eco")
         if present is True:
             return find_mode("ultimate") if mux == MUX_ULTIMATE else find_mode("standard")
-        # 拿不到硬件信号时退回寄存器语义
         if eco_reg == 1:
             return find_mode("eco")
         if eco_reg is None:
@@ -310,12 +276,11 @@ class AsusPanel:
         return find_mode("ultimate") if mux == MUX_ULTIMATE else find_mode("standard")
 
     def refresh_static(self) -> None:
-        """刷新不随每秒变化的部分：机型、模式高亮。"""
         hw = self._read_hw()
         self._last_hw = hw
 
         try:
-            from .asusprobe import run_self_test  # noqa: F401  仅为确保模块可用
+            from .asusprobe import run_self_test
         except Exception:
             pass
 
@@ -326,7 +291,6 @@ class AsusPanel:
         self.mode_big_label.configure(text=mode.label if mode else "接口不可用")
         self.mode_big_label.configure(fg=ACCENT if mode else ERROR)
 
-        # 独显供电 / 显示通路：这两行是"哪块卡在用"的关键信息，必须写出来
         present = hw.get("present")
         problem = hw.get("device_problem")
         mux = hw.get("mux")
@@ -373,7 +337,6 @@ class AsusPanel:
                 winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\BIOS"
             ) as key:
                 model = str(winreg.QueryValueEx(key, "SystemProductName")[0])
-            # 厂商常把型号写成 "TX Gaming FX608LM_FX608LM"，去掉重复段
             model = model.replace("_", " ").strip()
             words = model.split()
             deduped: List[str] = []
@@ -388,7 +351,6 @@ class AsusPanel:
             return "ASUS 笔记本"
 
     def tick(self) -> None:
-        """每秒刷新占用数据。"""
         self.drain_messages()
 
         adapters = self.adapters_provider() or []
@@ -400,7 +362,6 @@ class AsusPanel:
         system = self.collector.system()
         nvidia = self.collector.nvidia_sample()
 
-        # --- 独显：优先用 nvidia-smi（设备级占用，最贴近任务管理器）---
         dgpu = next((a for a in adapters if a.kind == TYPE_DISCRETE), None)
         if nvidia:
             sample = next(iter(nvidia.values()))
@@ -414,7 +375,6 @@ class AsusPanel:
         else:
             d_util, vram_used, vram_total = 0.0, 0, 0
 
-        # --- 核显：PDH 里属于核显 LUID 的最大引擎占用 ---
         igpu = next((a for a in adapters if a.kind == TYPE_INTEGRATED), None)
         i_util = igpu.util_percent if igpu is not None else 0.0
 
@@ -437,7 +397,6 @@ class AsusPanel:
         else:
             self.vram_bar.set(0.0, format_bytes(vram_used) if vram_used else "—")
 
-        # 温度：CPU 温度走华硕 ACPI，独显温度多数机型不支持
         cpu_temp = self._acpi.get(0x00120094)
         gpu_temp = self._acpi.get(0x00120097)
         temp_text = []
@@ -453,7 +412,6 @@ class AsusPanel:
 
         self.ram_bar.set(system.ram_percent, system.ram_label)
 
-        # 硬件状态每 3 秒复查一次（外部工具可能改了模式）
         self._hw_tick += 1
         if self._hw_tick % 3 == 0:
             previous = (self._last_hw or {}).get("mode")
@@ -466,9 +424,6 @@ class AsusPanel:
                     "warn",
                 )
 
-    # ------------------------------------------------------------------
-    # 消息 / 自检 / 显隐
-    # ------------------------------------------------------------------
 
     def set_message(self, text: str, kind: str = "info") -> None:
         self._message = text
@@ -501,7 +456,6 @@ class AsusPanel:
         )
 
     def show_self_test(self) -> None:
-        """在界面上展示接口自检结果（不写任何状态）。"""
         try:
             from .asusprobe import run_self_test
 
@@ -553,7 +507,6 @@ class AsusPanel:
                     self.set_message(f"锁定失败：{result.message}", "error")
         except Exception as exc:
             self.set_message(f"锁定操作失败：{exc}", "error")
-        # 刷新按钮文字
         for child in self.footer_card.winfo_children():
             for button in child.winfo_children():
                 if isinstance(button, FlatButton) and str(button.cget("text")).startswith("锁定:"):
@@ -589,7 +542,6 @@ class AsusPanel:
         else:
             self.show()
 
-    # 兼容旧接口命名
     @property
     def adapters(self) -> List[GpuAdapter]:
         return self.adapters_provider() or []

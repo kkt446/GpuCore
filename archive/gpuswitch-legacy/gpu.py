@@ -1,8 +1,3 @@
-"""显卡枚举。
-
-Windows 上优先走 DXGI（能拿到真正的 LUID / 厂商 ID / 显存），
-失败时回落到注册表与 nvidia-smi。非 Windows 平台走各自的命令。
-"""
 
 from __future__ import annotations
 
@@ -28,30 +23,19 @@ from .paths import is_linux, is_macos, is_windows
 
 logger = log.get(__name__)
 
-# ---------------------------------------------------------------------------
-# DXGI 常量
-# ---------------------------------------------------------------------------
 
 DXGI_ERROR_NOT_FOUND = 0x887A0002
 DXGI_ADAPTER_FLAG_SOFTWARE = 0x2
 DXGI_ADAPTER_FLAG_REMOTE = 0x4
 
-# HKCU 下的按程序 GPU 首选项
 USER_GPU_PREFS_KEY = r"Software\Microsoft\DirectX\UserGpuPreferences"
 
 
 def _guid(text: str):
-    """把 '{XXXXXXXX-XXXX-...}' 转成 16 字节小端 GUID 布局。"""
     import uuid
 
     u = uuid.UUID(text.strip("{}"))
     return (ctypes.c_byte * 16).from_buffer_copy(u.bytes_le)
-
-
-# ---------------------------------------------------------------------------
-# DXGI：底层结构
-# ---------------------------------------------------------------------------
-
 
 class _LUID(ctypes.Structure):
     _fields_ = [("LowPart", ctypes.c_uint32), ("HighPart", ctypes.c_int32)]
@@ -73,7 +57,6 @@ class _DXGI_ADAPTER_DESC1(ctypes.Structure):
 
 
 def _vtbl_call(ptr, index: int, restype, *argtypes):
-    """取 COM 接口第 index 个虚函数并设置好签名。"""
     vtable = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
     proto = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)
     return proto(vtable[index])
@@ -89,7 +72,6 @@ def _release(ptr) -> None:
 
 
 def enumerate_dxgi() -> List[GpuAdapter]:
-    """用 DXGI 枚举显示适配器（Windows 10 1803+）。"""
     if not is_windows():
         return []
 
@@ -105,7 +87,7 @@ def enumerate_dxgi() -> List[GpuAdapter]:
         create = dxgi.CreateDXGIFactory1
         create.restype = ctypes.c_long
         create.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
-        iid = _guid("{770AAE78-F26F-4DBA-A829-253C83D1B387}")  # IDXGIFactory1
+        iid = _guid("{770AAE78-F26F-4DBA-A829-253C83D1B387}")
         hr = create(ctypes.byref(iid), ctypes.byref(factory))
         if hr < 0 or not factory:
             logger.debug("CreateDXGIFactory1 失败 hr=0x%08X", hr & 0xFFFFFFFF)
@@ -173,16 +155,10 @@ def enumerate_dxgi() -> List[GpuAdapter]:
 
     return adapters
 
-
-# ---------------------------------------------------------------------------
-# 注册表回退
-# ---------------------------------------------------------------------------
-
 _VIDEO_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
 def enumerate_registry() -> List[GpuAdapter]:
-    """从设备类注册表读取显卡（不需要管理员，作为 DXGI 的回退）。"""
     if not is_windows():
         return []
     import winreg
@@ -231,14 +207,7 @@ def enumerate_registry() -> List[GpuAdapter]:
         logger.debug("注册表枚举失败: %s", exc)
     return adapters
 
-
-# ---------------------------------------------------------------------------
-# 显示器归属：哪块卡在驱动屏幕
-# ---------------------------------------------------------------------------
-
-
 def display_adapter_names() -> List[str]:
-    """返回正在驱动显示器的适配器名称（用于标记"当前在用"）。"""
     names: List[str] = []
     if is_windows():
         try:
@@ -255,7 +224,7 @@ def display_adapter_names() -> List[str]:
                     ("DeviceKey", ctypes.c_wchar * 128),
                 ]
 
-            DD_DEVICE_NAME = 0x1  # 适配器级别
+            DD_DEVICE_NAME = 0x1
             index = 0
             while True:
                 dev = _DISPLAY_DEVICEW()
@@ -263,7 +232,6 @@ def display_adapter_names() -> List[str]:
                 if not user32.EnumDisplayDevicesW(None, index, ctypes.byref(dev), DD_DEVICE_NAME):
                     break
                 index += 1
-                # 跳过镜像/远程适配器：真正驱动屏幕的适配器有一个活动显示器
                 monitor = _DISPLAY_DEVICEW()
                 monitor.cb = ctypes.sizeof(_DISPLAY_DEVICEW)
                 attached = False
@@ -272,12 +240,12 @@ def display_adapter_names() -> List[str]:
                     dev.DeviceName, m_index, ctypes.byref(monitor), 0
                 ):
                     m_index += 1
-                    if monitor.StateFlags & 0x1:  # DISPLAY_DEVICE_ATTACHED_TO_DESKTOP
+                    if monitor.StateFlags & 0x1:
                         attached = True
                         break
                 if attached and dev.DeviceString:
                     names.append(dev.DeviceString.strip())
-            gdi32  # noqa: B018 - 保持引用
+            gdi32
         except Exception as exc:
             logger.debug("EnumDisplayDevices 失败: %s", exc)
     return names
@@ -288,7 +256,6 @@ def _normalize(text: str) -> str:
 
 
 def mark_display_adapters(adapters: List[GpuAdapter]) -> None:
-    """把驱动显示器的适配器标记出来。"""
     names = display_adapter_names()
     if not names:
         return
@@ -300,17 +267,10 @@ def mark_display_adapters(adapters: List[GpuAdapter]) -> None:
         if key in normalized:
             adapter.drives_display = True
             continue
-        # 容忍 "NVIDIA GeForce RTX 5060 Laptop GPU" vs 短名 的差异
         for candidate in normalized:
             if len(key) >= 8 and (key in candidate or candidate in key):
                 adapter.drives_display = True
                 break
-
-
-# ---------------------------------------------------------------------------
-# nvidia-smi 补充（显存总量在 Windows 上偶有偏差）
-# ---------------------------------------------------------------------------
-
 
 def nvidia_smi_adapters() -> List[Dict[str, object]]:
     if not is_windows() and not is_linux():
@@ -350,12 +310,6 @@ def nvidia_smi_adapters() -> List[Dict[str, object]]:
         except ValueError:
             continue
     return items
-
-
-# ---------------------------------------------------------------------------
-# 各平台枚举入口
-# ---------------------------------------------------------------------------
-
 
 def _enumerate_linux() -> List[GpuAdapter]:
     adapters: List[GpuAdapter] = []
@@ -418,7 +372,6 @@ def _enumerate_macos() -> List[GpuAdapter]:
 
 
 def _read_user_preferences() -> Dict[str, str]:
-    """读取 HKCU 的按程序 GPU 首选项。"""
     if not is_windows():
         return {}
     import winreg
@@ -441,7 +394,6 @@ def _read_user_preferences() -> Dict[str, str]:
 
 
 def parse_preference(value: str) -> Optional[int]:
-    """解析 'GpuPreference=2;' / 'GpuPreference=2;10DE:2D59;'。"""
     if not value:
         return None
     match = re.search(r"GpuPreference\s*=\s*(\d+)", value, re.I)
@@ -451,11 +403,6 @@ def parse_preference(value: str) -> Optional[int]:
 
 
 def dedupe_adapters(adapters: List[GpuAdapter]) -> List[GpuAdapter]:
-    """合并厂商+设备号相同的重复条目。
-
-    混合显卡笔记本上同一块核显/独显常被 DXGI 多次枚举（显示输出一份、
-    计算一份）。它们写进注册表的首选项完全相同，界面上只该出现一次。
-    """
     groups: Dict[tuple, List[GpuAdapter]] = {}
     order: List[tuple] = []
     passthrough: List[GpuAdapter] = []
@@ -476,7 +423,6 @@ def dedupe_adapters(adapters: List[GpuAdapter]) -> List[GpuAdapter]:
         if len(items) == 1:
             merged.append(items[0])
             continue
-        # 优先保留：驱动显示器的 > 有显存的 > 占用高的 > 名字短的
         items.sort(
             key=lambda a: (
                 0 if a.drives_display else 1,
@@ -495,10 +441,6 @@ def dedupe_adapters(adapters: List[GpuAdapter]) -> List[GpuAdapter]:
 
 
 def enumerate_adapters(use_cache: bool = True, cache_ms: int = 5000) -> List[GpuAdapter]:
-    """返回排序后的显卡列表。
-
-    Windows 下 DXGI 为主、注册表为补充；结果按独显优先排序。
-    """
     global _cache, _cache_time
     import time
 
@@ -511,7 +453,6 @@ def enumerate_adapters(use_cache: bool = True, cache_ms: int = 5000) -> List[Gpu
         adapters = enumerate_dxgi()
         if not adapters:
             adapters = enumerate_registry()
-        # 注册表信息更全时做合并（DXGI 的显存偶有 0 值）
         if adapters:
             reg = {a.key: a for a in enumerate_registry()}
             for adapter in adapters:
@@ -519,7 +460,6 @@ def enumerate_adapters(use_cache: bool = True, cache_ms: int = 5000) -> List[Gpu
                 if fallback and adapter.dedicated_vram <= 0 and fallback.dedicated_vram > 0:
                     adapter.dedicated_vram = fallback.dedicated_vram
         mark_display_adapters(adapters)
-        # nvidia-smi 用来补精度（显存总量/名称）
         for smi in nvidia_smi_adapters():
             for adapter in adapters:
                 if adapter.vendor_id == 0x10DE and _normalize(str(smi["name"])) in _normalize(adapter.name) or (
@@ -538,7 +478,6 @@ def enumerate_adapters(use_cache: bool = True, cache_ms: int = 5000) -> List[Gpu
         logger.warning("未枚举到任何显卡（平台 %s）", sys.platform)
 
     if adapters:
-        # 给集显/独显补上 GpuPreference 语义取值
         for adapter in adapters:
             adapter.preference = (
                 PREF_POWER_SAVING if adapter.kind == TYPE_INTEGRATED
@@ -564,12 +503,6 @@ def invalidate_cache() -> None:
 
 
 def describe_renderer(adapters: List[GpuAdapter]) -> Optional[GpuAdapter]:
-    """判断"当前实际在渲染的是哪块卡"。
-
-    混合显卡笔记本上，所有程序的画面最终都输出到核显，所以"谁在驱动显示器"
-    不能用来判断渲染方。真正可靠的判据是**实时渲染负载**：
-    谁在干活，就是谁在渲染。
-    """
     real = [a for a in adapters if a.kind != TYPE_VIRTUAL]
     if not real:
         return None
@@ -578,7 +511,6 @@ def describe_renderer(adapters: List[GpuAdapter]) -> Optional[GpuAdapter]:
     if busy:
         return max(busy, key=lambda a: a.util_percent)
 
-    # 全部空闲时，退了休的判断：正在驱动显示器的独显 > 有独立显存的 > 第一块
     displaying = [a for a in real if a.drives_display]
     discrete_display = [a for a in displaying if a.kind == TYPE_DISCRETE]
     if discrete_display:
@@ -590,16 +522,11 @@ def describe_renderer(adapters: List[GpuAdapter]) -> Optional[GpuAdapter]:
 
 
 def describe_current(adapters: List[GpuAdapter]) -> Optional[GpuAdapter]:
-    """判断"当前正在使用的显卡"。
-
-    规则：正在驱动显示器 > 实时占用最高 > 有独立显存。
-    """
     if not adapters:
         return None
 
     displaying = [a for a in adapters if a.drives_display and a.kind != TYPE_VIRTUAL]
     if displaying:
-        # 多块都在驱动屏幕时选占用高的
         return max(displaying, key=lambda a: a.util_percent)
 
     real = [a for a in adapters if a.kind != TYPE_VIRTUAL]

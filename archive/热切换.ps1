@@ -1,18 +1,4 @@
-﻿#Requires -Version 5.1
-<#
-    华硕显卡热切换 —— 零依赖版（只用 Windows 自带的 PowerShell）
-
-    不需要 Python、不需要任何库。双击 热切换-GUI.cmd 出窗口，
-    或在命令行里用：
-        powershell -ExecutionPolicy Bypass -File 热切换.ps1 on      # 开独显（标准模式）
-        powershell -ExecutionPolicy Bypass -File 热切换.ps1 off     # 关独显（集显模式）
-        powershell -ExecutionPolicy Bypass -File 热切换.ps1 status  # 看状态
-
-    切换顺序照 G-Helper 的 GPUModeControl.SetGPUEco：
-        关独显：杀占用独显的进程 -> 停 NVIDIA 服务 -> 写 ACPI(GPUEco=1)
-        开独显：写 ACPI(GPUEco=0) -> 启 NVIDIA 服务
-    独显被占用时 EC 拒绝断电，所以"先杀进程"这步不能省。
-#>
+﻿
 
 [CmdletBinding()]
 param(
@@ -22,10 +8,6 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-
-# ---------------------------------------------------------------------------
-# ACPI 通道（\\.\ATKACPI）
-# ---------------------------------------------------------------------------
 
 $atkSource = @'
 using System;
@@ -98,7 +80,7 @@ function Write-Warn2($t){ Write-Host "  [!]  $t" -ForegroundColor Yellow }
 function Write-Err($t)  { Write-Host "  [X]  $t" -ForegroundColor Red }
 
 function Test-DgpuWorks {
-    # 只在需要时调用一次：探测独显会唤醒它，不能轮询
+    
     $r = & nvidia-smi --query-gpu=name --format=csv,noheader 2>&1 | Out-String
     return ($LASTEXITCODE -eq 0 -and $r -match 'NVIDIA')
 }
@@ -130,7 +112,7 @@ function Invoke-Switch {
 
     try {
         if ($Off) {
-            # ---- 关独显前的准备（G-Helper 的必需步骤）----
+            
             $procs = Get-GpuProcesses
             if ($procs.Count -gt 0) {
                 Write-Step "结束占用独显的程序：$(($procs | ForEach-Object { $_.Name }) -join '、')"
@@ -207,7 +189,7 @@ function Show-Status {
 }
 
 function Repair-Device {
-    # 重启显卡设备，让驱动重新接管（需要管理员）
+    
     $id = (& pnputil /enum-devices /class Display 2>&1 |
         Select-String -Pattern 'PCI\\VEN_10DE\S+' -AllMatches |
         ForEach-Object { $_.Matches.Value } | Select-Object -First 1)
@@ -312,8 +294,6 @@ function Show-Gui {
     $form.TopMost = $true
     [void]$form.ShowDialog()
 }
-
-# ---------------------------------------------------------------------------
 
 Write-Host ""
 Write-Host "  华硕显卡热切换" -ForegroundColor White

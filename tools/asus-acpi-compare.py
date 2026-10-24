@@ -1,13 +1,3 @@
-"""对比 ASUS ACPI 的读取方式，找出为什么写命令返回成功但状态不变。
-
-分别测试：
-    A. 短读（输入 8 字节，输出 16）—— 本项目原来的做法
-    B. 大读（输入 12 字节，输出 64）—— G-Helper DeviceGetLarge 的做法
-    C. 先发 INIT 握手再读
-    D. 用不同设备号试着写 eco，看哪个真正生效
-
-只做只读探测 + 一次可回滚的写入。
-"""
 
 from __future__ import annotations
 
